@@ -8,6 +8,18 @@ IMPORTANT:
 1) awsume DataTeamAdmin and awsume QuickSightData must be run in the terminal first
 2) For this to work, you must have these profiles in your AWS credentials file with appropriate permissions.
 
+How to use:
+    Run default config: 
+        python quicksight_audit.py --run-all
+
+    List specific datasets and their calculated fields:
+        python quicksight_audit.py --datasets "Dataset_Name_1" "Dataset_Name_2" --calc-fields
+    
+    List specific analyses:
+        python quicksight_audit.py --analysis "Analysis_Name_Substring"
+    
+    List specific dashboards:
+        python quicksight_audit.py --dashboard "Dashboard_Name_Substring"
 '''
 import boto3
 import argparse
