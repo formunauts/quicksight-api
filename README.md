@@ -1,0 +1,1 @@
+Contains scripts to use the QuickSight API. Make sure to awsume the appropriate roles before you run any scripts.
