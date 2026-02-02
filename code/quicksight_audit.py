@@ -25,10 +25,15 @@ import boto3
 import argparse
 import datetime
 import sys
+import os
+from dotenv import load_dotenv
+# Load env
+env_loaded = load_dotenv()
+print(f'Loaded .env file: {env_loaded}')
 
 # Default config if nothing is passed
-QS_ACCOUNT_ID = '395443580020'
-REGION = 'eu-central-1'
+QS_ACCOUNT_ID = os.getenv('QS_AWS_ACCOUNT_ID')
+REGION = os.getenv('QS_AWS_REGION')
 ROOT_DIR = sys.path[0].rsplit('\\code', 1)[0]
 timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 OUTPUT_FILE = f'{ROOT_DIR}/logs/quicksight_audit_report_{timestamp}.txt'
