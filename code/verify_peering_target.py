@@ -1,3 +1,6 @@
+'''
+Script to verify details of a specified VPC peering connection.
+'''
 import boto3
 import os
 from dotenv import load_dotenv

@@ -1,3 +1,7 @@
+'''
+This script updates an AWS security group to allow inbound TCP traffic on port 5432
+from a specified production CIDR range.
+'''
 import boto3
 import sys
 import os

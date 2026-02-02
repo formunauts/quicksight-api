@@ -1,3 +1,7 @@
+'''
+This module audits the route tables associated with a specified VPC connection
+to identify any routes that direct traffic through peering connections or transit gateways.
+'''
 import boto3
 import sys
 import os

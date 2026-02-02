@@ -1,3 +1,6 @@
+'''
+Script to share an existing QuickSight data source with other users in the same AWS account.
+'''
 import boto3
 import sys
 import argparse

@@ -1,3 +1,7 @@
+'''
+This module inspects the security groups attached to a specified RDS cluster
+to check for any rules that allow access from production IP ranges.
+'''
 import boto3
 import sys
 import os

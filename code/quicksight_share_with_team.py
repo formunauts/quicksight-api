@@ -1,3 +1,6 @@
+'''
+Script to share a QuickSight data source with specified team members by updating its permissions.
+'''
 import boto3
 import sys
 import os

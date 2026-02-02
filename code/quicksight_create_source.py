@@ -1,3 +1,6 @@
+'''
+Script to create a QuickSight data source connecting to a PostgreSQL database via an existing VPC connection.
+'''
 import os
 import boto3
 import sys
