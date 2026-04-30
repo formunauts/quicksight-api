@@ -1,48 +1,18 @@
-'''
-QuickSight Audit Script
-This script connects to AWS QuickSight using boto3 and performs the following tasks:
-1. Identifies specific datasets by name and extracts their calculated fields.
-2. Scans all analyses to find a specific analysis by name.
-
-IMPORTANT: 
-1) awsume DataTeamAdmin and awsume QuickSightData must be run in the terminal first
-2) For this to work, you must have these profiles in your AWS credentials file with appropriate permissions.
-
-How to use:
-    Run default config: 
-        python quicksight_audit.py --run-all
-
-    List specific datasets and their calculated fields:
-        python quicksight_audit.py --datasets "Dataset_Name_1" "Dataset_Name_2" --calc-fields
-
-    Search datasets by dataset name substring:
-        python quicksight_audit.py --dataset-name-contains "marketplace_dach" --calc-fields
-
-    Search calculated fields across all datasets by field name substring:
-        python quicksight_audit.py --calc-field-name-contains "dataflow"
-    
-    List specific analyses:
-        python quicksight_audit.py --analysis "Analysis_Name_Substring"
-    
-    List specific dashboards:
-        python quicksight_audit.py --dashboard "Dashboard_Name_Substring"
-'''
-import boto3
 import argparse
-import datetime
 import sys
-import os
-from dotenv import load_dotenv
-# Load env
-env_loaded = load_dotenv()
-print(f'Loaded .env file: {env_loaded}')
+from typing import Dict, Iterable, List, Optional
 
-# Default config if nothing is passed
-QS_ACCOUNT_ID = os.getenv('QS_AWS_ACCOUNT_ID')
-REGION = os.getenv('QS_AWS_REGION')
-ROOT_DIR = sys.path[0].rsplit('\\code', 1)[0]
-timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-OUTPUT_FILE = f'{ROOT_DIR}/logs/quicksight_audit_report_{timestamp}.txt'
+from qs_common import (
+    LOG_DIR,
+    QS_ACCOUNT_ID,
+    QS_REGION,
+    Logger,
+    build_log_path,
+    create_quicksight_client,
+    get_all_summaries,
+    require_env,
+)
+
 
 DEFAULT_DATASETS = [
     "Marketplace_Dach_Billing_AT_DE_ONLY_GAAT/DE",
@@ -52,118 +22,113 @@ DEFAULT_DATASETS = [
 ]
 DEFAULT_ENTITY_NAME = "Quality One-Pager"
 
-# Logging setup
-class Logger:
-    def __init__(self, filename):
-        self.filename = filename
-        with open(self.filename, 'w', encoding='utf-8') as f:
-            f.write(f"QUICKSIGHT AUDIT REPORT\n")
-            f.write(f"Generated on: {datetime.datetime.now()}\n")
-            f.write("="*60 + "\n\n")
 
-    def log(self, message):
-        print(message)
-        with open(self.filename, 'a', encoding='utf-8') as f:
-            f.write(message + "\n")
-
-logger = Logger(OUTPUT_FILE)
-
-# Helpers
-def get_all_summaries(func, account_id, key_name):
-    """Generic pagination helper."""
-    items = []
-    next_token = None
-    page_count = 1
-    
-    logger.log(f"(Scanning pages for {key_name}...)")
-    
-    while True:
-        kwargs = {'AwsAccountId': account_id}
-        if next_token:
-            kwargs['NextToken'] = next_token
-        
-        response = func(**kwargs)
-        batch = response.get(key_name, [])
-        items.extend(batch)
-        
-        next_token = response.get('NextToken')
-        if not next_token:
-            break
-        
-        page_count += 1
-        
-    return items
-
-def select_datasets(all_datasets, target_names=None, name_contains=None):
-    """Filter datasets by exact names and/or a case-insensitive substring."""
+def select_datasets(
+    all_datasets: List[Dict[str, str]],
+    target_names: Optional[Iterable[str]] = None,
+    name_contains: Optional[str] = None,
+) -> List[Dict[str, str]]:
     selected = []
     exact_names = set(target_names or [])
     substring = name_contains.lower() if name_contains else None
 
-    for ds in all_datasets:
-        name = ds['Name']
+    for dataset in all_datasets:
+        name = dataset["Name"]
         exact_match = name in exact_names if exact_names else True
         substring_match = substring in name.lower() if substring else True
         if exact_match and substring_match:
-            selected.append(ds)
+            selected.append(dataset)
 
     return selected
 
-def search_datasets(qs_client, target_names=None, name_contains=None, show_calc_fields=False):
-    logger.log(f"\n" + "-"*40)
-    logger.log(f"DATASET SEARCH")
+
+def extract_calculated_columns(dataset_details: Dict[str, object]) -> List[Dict[str, str]]:
+    matches: List[Dict[str, str]] = []
+    logical_map = dataset_details.get("DataSet", {}).get("LogicalTableMap", {})
+    for value in logical_map.values():
+        for transform in value.get("DataTransforms", []):
+            operation = transform.get("CreateColumnsOperation")
+            if not operation:
+                continue
+            for column in operation.get("Columns", []):
+                matches.append(
+                    {
+                        "column_name": column.get("ColumnName", ""),
+                        "expression": column.get("Expression", ""),
+                    }
+                )
+    return matches
+
+
+def search_datasets(
+    qs_client,
+    logger: Logger,
+    target_names: Optional[List[str]] = None,
+    name_contains: Optional[str] = None,
+    show_calc_fields: bool = False,
+) -> None:
+    logger.log("-" * 40)
+    logger.log("DATASET SEARCH")
     if target_names:
         logger.log(f"Looking for exact dataset names: {target_names}")
     if name_contains:
         logger.log(f"Looking for dataset names containing: '{name_contains}'")
-    logger.log("-"*40)
+    logger.log("-" * 40)
 
-    all_datasets = get_all_summaries(qs_client.list_data_sets, QS_ACCOUNT_ID, 'DataSetSummaries')
+    all_datasets = get_all_summaries(qs_client.list_data_sets, QS_ACCOUNT_ID, "DataSetSummaries")
+    logger.log(f"Datasets discovered: {len(all_datasets)}")
 
     selected_datasets = select_datasets(all_datasets, target_names=target_names, name_contains=name_contains)
-    exact_name_matches = {ds['Name'] for ds in selected_datasets}
+    exact_name_matches = {dataset["Name"] for dataset in selected_datasets}
 
     if target_names:
         missing_datasets = sorted(set(target_names) - exact_name_matches)
         for missing_name in missing_datasets:
             logger.log(f"Dataset not found: {missing_name}")
 
-    found_datasets = {}
-    for ds in selected_datasets:
-        found_datasets[ds['Name']] = ds['DataSetId']
-        logger.log(f"FOUND: {ds['Name']} (ID: {ds['DataSetId']})")
-
-    if not found_datasets:
+    if not selected_datasets:
         logger.log("No matching datasets found.")
         return
 
-    if show_calc_fields:
-        logger.log(f"\n" + "-"*40)
-        logger.log(f"EXTRACTING CALCULATED FIELDS")
-        logger.log("-"*40)
+    for dataset in selected_datasets:
+        logger.log(f"FOUND: {dataset['Name']} (ID: {dataset['DataSetId']})")
 
-        for name, ds_id in found_datasets.items():
-            try:
-                details = qs_client.describe_data_set(AwsAccountId=QS_ACCOUNT_ID, DataSetId=ds_id)
-                logical_map = details['DataSet'].get('LogicalTableMap', {})
-                
-                logger.log(f"\nDATASET: {name}")
-                count = 0
-                for key, value in logical_map.items():
-                    if 'DataTransforms' in value:
-                        for transform in value['DataTransforms']:
-                            if 'CreateColumnsOperation' in transform:
-                                for col in transform['CreateColumnsOperation']['Columns']:
-                                    logger.log(f"🔹 {col['ColumnName']}")
-                                    logger.log(f"= {col['Expression']}")
-                                    count += 1
-                if count == 0:
-                    logger.log("      (No calculated fields)")
-            except Exception as e:
-                logger.log(f"Error describing dataset '{name}': {e}")
+    if not show_calc_fields:
+        return
 
-def search_calculated_fields_by_name(qs_client, field_name_contains, dataset_names=None, dataset_name_contains=None):
-    logger.log(f"\n" + "-"*40)
+    logger.log("")
+    logger.log("-" * 40)
+    logger.log("EXTRACTING CALCULATED FIELDS")
+    logger.log("-" * 40)
+    for dataset in selected_datasets:
+        try:
+            details = qs_client.describe_data_set(
+                AwsAccountId=QS_ACCOUNT_ID,
+                DataSetId=dataset["DataSetId"],
+            )
+        except Exception as exc:
+            logger.log(f"Error describing dataset '{dataset['Name']}': {exc}")
+            continue
+
+        logger.log("")
+        logger.log(f"DATASET: {dataset['Name']}")
+        calculated_columns = extract_calculated_columns(details)
+        if not calculated_columns:
+            logger.log("(No calculated fields)")
+            continue
+        for column in calculated_columns:
+            logger.log(f"- {column['column_name']}")
+            logger.log(f"  = {column['expression']}")
+
+
+def search_calculated_fields_by_name(
+    qs_client,
+    logger: Logger,
+    field_name_contains: str,
+    dataset_names: Optional[List[str]] = None,
+    dataset_name_contains: Optional[str] = None,
+) -> None:
+    logger.log("-" * 40)
     logger.log("CALCULATED FIELD SEARCH")
     logger.log(f"Searching for calculated field names containing: '{field_name_contains}'")
     if dataset_names:
@@ -172,157 +137,182 @@ def search_calculated_fields_by_name(qs_client, field_name_contains, dataset_nam
         logger.log(f"Restricting search to dataset names containing: '{dataset_name_contains}'")
     if not dataset_names and not dataset_name_contains:
         logger.log("Scanning all datasets")
-    logger.log("-"*40)
+    logger.log("-" * 40)
 
-    all_datasets = get_all_summaries(qs_client.list_data_sets, QS_ACCOUNT_ID, 'DataSetSummaries')
+    all_datasets = get_all_summaries(qs_client.list_data_sets, QS_ACCOUNT_ID, "DataSetSummaries")
     datasets_to_scan = select_datasets(
         all_datasets,
         target_names=dataset_names,
-        name_contains=dataset_name_contains
+        name_contains=dataset_name_contains,
     )
 
     if dataset_names:
-        matched_exact_names = {ds['Name'] for ds in datasets_to_scan}
+        matched_exact_names = {dataset["Name"] for dataset in datasets_to_scan}
         missing_datasets = sorted(set(dataset_names) - matched_exact_names)
         for missing_name in missing_datasets:
             logger.log(f"Dataset not found: {missing_name}")
 
     logger.log(f"Datasets to scan: {len(datasets_to_scan)}")
-
-    found = False
     search_term = field_name_contains.lower()
+    found = False
 
-    for ds in datasets_to_scan:
+    for dataset in datasets_to_scan:
         try:
             details = qs_client.describe_data_set(
                 AwsAccountId=QS_ACCOUNT_ID,
-                DataSetId=ds['DataSetId']
+                DataSetId=dataset["DataSetId"],
             )
-            logical_map = details['DataSet'].get('LogicalTableMap', {})
+        except Exception as exc:
+            logger.log(f"Error describing dataset '{dataset['Name']}': {exc}")
+            continue
 
-            matches = []
-            for value in logical_map.values():
-                for transform in value.get('DataTransforms', []):
-                    if 'CreateColumnsOperation' not in transform:
-                        continue
-                    for col in transform['CreateColumnsOperation'].get('Columns', []):
-                        column_name = col.get('ColumnName', '')
-                        if search_term in column_name.lower():
-                            matches.append({
-                                'ColumnName': column_name,
-                                'Expression': col.get('Expression', '')
-                            })
+        matches = [
+            column
+            for column in extract_calculated_columns(details)
+            if search_term in column["column_name"].lower()
+        ]
+        if not matches:
+            continue
 
-            if matches:
-                found = True
-                logger.log(f"\nDATASET: {ds['Name']} (ID: {ds['DataSetId']})")
-                for match in matches:
-                    logger.log(f"- {match['ColumnName']}")
-                    logger.log(f"  = {match['Expression']}")
-
-        except Exception as e:
-            logger.log(f"Error describing dataset '{ds['Name']}': {e}")
+        found = True
+        logger.log("")
+        logger.log(f"DATASET: {dataset['Name']} (ID: {dataset['DataSetId']})")
+        for match in matches:
+            logger.log(f"- {match['column_name']}")
+            logger.log(f"  = {match['expression']}")
 
     if not found:
         logger.log(f"No calculated fields found matching '{field_name_contains}'")
 
-def search_analyses(qs_client, search_term):
-    logger.log(f"\n" + "-"*40)
-    logger.log(f"ANALYSIS SEARCH")
+
+def search_assets(qs_client, logger: Logger, search_term: str, label: str, func, key_name: str, id_key: str, extra_key: Optional[str] = None) -> None:
+    logger.log("-" * 40)
+    logger.log(f"{label.upper()} SEARCH")
     logger.log(f"Searching for name containing: '{search_term}'")
-    logger.log("-"*40)
+    logger.log("-" * 40)
 
-    all_items = get_all_summaries(qs_client.list_analyses, QS_ACCOUNT_ID, 'AnalysisSummaryList')
-    
+    items = get_all_summaries(func, QS_ACCOUNT_ID, key_name)
     found = False
-    for item in all_items:
-        if search_term.lower() in item['Name'].lower():
-            logger.log(f"FOUND: '{item['Name']}'")
-            logger.log(f"ID: {item['AnalysisId']}")
-            logger.log(f"Status: {item.get('Status', 'Unknown')}")
-            found = True
-    
+    for item in items:
+        if search_term.lower() not in item["Name"].lower():
+            continue
+        logger.log(f"FOUND: '{item['Name']}'")
+        logger.log(f"ID: {item[id_key]}")
+        if extra_key:
+            logger.log(f"{extra_key}: {item.get(extra_key, 'N/A')}")
+        found = True
+
     if not found:
-        logger.log(f"No analyses found matching '{search_term}'")
+        logger.log(f"No {label.lower()}s found matching '{search_term}'")
 
-def search_dashboards(qs_client, search_term):
-    logger.log(f"\n" + "-"*40)
-    logger.log(f"DASHBOARD SEARCH")
-    logger.log(f"Searching for name containing: '{search_term}'")
-    logger.log("-"*40)
 
-    # Note: different API key for dashboards
-    all_items = get_all_summaries(qs_client.list_dashboards, QS_ACCOUNT_ID, 'DashboardSummaryList')
-    
-    found = False
-    for item in all_items:
-        if search_term.lower() in item['Name'].lower():
-            logger.log(f"FOUND: '{item['Name']}'")
-            logger.log(f"ID: {item['DashboardId']}")
-            logger.log(f"Published Version: {item.get('PublishedVersionNumber', 'N/A')}")
-            found = True
-    
-    if not found:
-        logger.log(f"No dashboards found matching '{search_term}'")
-
-# Main execution
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="QuickSight Audit CLI Tool")
-    
-    # Define Arguments
-    parser.add_argument('--run-all', action='store_true', help="Run all default checks (Datasets + Analysis search)")
-    parser.add_argument('--datasets', nargs='+', help="List of dataset names to search for")
-    parser.add_argument('--dataset-name-contains', help="Search datasets by dataset name substring")
-    parser.add_argument('--calc-fields', action='store_true', help="Fetch calculated fields for the found datasets")
-    parser.add_argument('--calc-field-name-contains', help="Search calculated fields by name substring across all datasets, or within --datasets if provided")
-    parser.add_argument('--analysis', help="Search for an Analysis by name (substring)")
-    parser.add_argument('--dashboard', help="Search for a Dashboard by name (substring)")
-    
+def main() -> None:
+    parser = argparse.ArgumentParser(description="QuickSight audit CLI tool.")
+    parser.add_argument("--run-all", action="store_true", help="Run the default dataset, analysis, and dashboard checks.")
+    parser.add_argument("--datasets", nargs="+", help="List of exact dataset names to search for.")
+    parser.add_argument("--dataset-name-contains", help="Search datasets by substring.")
+    parser.add_argument("--calc-fields", action="store_true", help="List calculated fields for matching datasets.")
+    parser.add_argument("--calc-field-name-contains", help="Search calculated field names across matching datasets.")
+    parser.add_argument("--analysis", help="Search analyses by name substring.")
+    parser.add_argument("--dashboard", help="Search dashboards by name substring.")
     args = parser.parse_args()
 
+    require_env("QS_AWS_ACCOUNT_ID", QS_ACCOUNT_ID)
+    require_env("QS_AWS_REGION", QS_REGION)
+    log_path = build_log_path("quicksight_audit_report")
+    logger = Logger(log_path, "QUICKSIGHT AUDIT REPORT")
+
     try:
-        # Initialize client
-        qs = boto3.client('quicksight', region_name=REGION)
-        logger.log(f"Connected to QuickSight (Account: {QS_ACCOUNT_ID})")
-        
-        # print full command
+        qs_client = create_quicksight_client()
+        logger.log(f"Connected to QuickSight (Account: {QS_ACCOUNT_ID}, Region: {QS_REGION})")
         logger.log(f"Command: {' '.join(sys.argv)}")
-        
-        # arguments handling
+        logger.log(f"Log file: {log_path}")
+        logger.log("")
+
         if args.run_all:
-            search_datasets(qs, DEFAULT_DATASETS, show_calc_fields=True)
-            search_analyses(qs, DEFAULT_ENTITY_NAME)
-            search_dashboards(qs, DEFAULT_ENTITY_NAME)
-            
+            search_datasets(qs_client, logger, DEFAULT_DATASETS, show_calc_fields=True)
+            logger.log("")
+            search_assets(
+                qs_client,
+                logger,
+                DEFAULT_ENTITY_NAME,
+                "analysis",
+                qs_client.list_analyses,
+                "AnalysisSummaryList",
+                "AnalysisId",
+                "Status",
+            )
+            logger.log("")
+            search_assets(
+                qs_client,
+                logger,
+                DEFAULT_ENTITY_NAME,
+                "dashboard",
+                qs_client.list_dashboards,
+                "DashboardSummaryList",
+                "DashboardId",
+                "PublishedVersionNumber",
+            )
         else:
-            # If manual flags are used
             if args.calc_field_name_contains:
                 search_calculated_fields_by_name(
-                    qs,
+                    qs_client,
+                    logger,
                     args.calc_field_name_contains,
                     dataset_names=args.datasets,
-                    dataset_name_contains=args.dataset_name_contains
+                    dataset_name_contains=args.dataset_name_contains,
                 )
-            
             elif args.datasets or args.dataset_name_contains:
                 search_datasets(
-                    qs,
+                    qs_client,
+                    logger,
                     target_names=args.datasets,
                     name_contains=args.dataset_name_contains,
-                    show_calc_fields=args.calc_fields
+                    show_calc_fields=args.calc_fields,
                 )
-            
+
             if args.analysis:
-                search_analyses(qs, args.analysis)
-                
+                logger.log("")
+                search_assets(
+                    qs_client,
+                    logger,
+                    args.analysis,
+                    "analysis",
+                    qs_client.list_analyses,
+                    "AnalysisSummaryList",
+                    "AnalysisId",
+                    "Status",
+                )
+
             if args.dashboard:
-                search_dashboards(qs, args.dashboard)
+                logger.log("")
+                search_assets(
+                    qs_client,
+                    logger,
+                    args.dashboard,
+                    "dashboard",
+                    qs_client.list_dashboards,
+                    "DashboardSummaryList",
+                    "DashboardId",
+                    "PublishedVersionNumber",
+                )
 
-            # If no args provided
-            if not any([args.datasets, args.dataset_name_contains, args.analysis, args.dashboard, args.calc_field_name_contains]):
-                print("No action selected. Use --run-all or specific flags. Use --help for info.")
+            if not any(
+                [
+                    args.datasets,
+                    args.dataset_name_contains,
+                    args.analysis,
+                    args.dashboard,
+                    args.calc_field_name_contains,
+                ]
+            ):
+                logger.log("No action selected. Use --run-all or specific flags. Use --help for info.")
 
-        logger.log(f"\nDONE. Output saved to {OUTPUT_FILE}")
+        logger.log("")
+        logger.log(f"DONE. Output saved to {log_path}")
+    except Exception as exc:
+        logger.log(f"FATAL ERROR: {exc}")
 
-    except Exception as e:
-        logger.log(f"FATAL ERROR: {str(e)}")
+
+if __name__ == "__main__":
+    main()

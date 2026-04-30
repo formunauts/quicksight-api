@@ -1,3 +1,7 @@
 /docs/*
 /logs/*
+!/logs/commands.txt
 **/.env
+**/__pycache__/
+*.pyc
+.venv/

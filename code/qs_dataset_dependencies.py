@@ -1,103 +1,109 @@
-import boto3
 import argparse
-import os
-import json
-import datetime
+from typing import Any, Dict, List, Optional, Set
+
 from tqdm import tqdm
-from dotenv import load_dotenv
 
-# Load env
-load_dotenv()
-QS_ACCOUNT_ID = os.getenv('QS_AWS_ACCOUNT_ID')
-REGION = os.getenv('QS_AWS_REGION', 'eu-central-1')
+from qs_common import (
+    QS_ACCOUNT_ID,
+    QS_REGION,
+    Logger,
+    build_log_path,
+    create_quicksight_client,
+    get_all_summaries,
+    require_env,
+)
 
-def extract_fields_from_json(obj, target_fields=None):
-    """Recursively crawls the JSON definition to find field references."""
+
+def extract_fields_from_json(obj: Any, target_fields: Optional[Set[str]] = None) -> Set[str]:
     if target_fields is None:
         target_fields = set()
-    
+
     if isinstance(obj, dict):
-        # QuickSight JSON typically stores field IDs/Names in these keys
-        for key in ['FieldId', 'ColumnName', 'Name']:
+        for key in ("FieldId", "ColumnName", "Name"):
             if key in obj and isinstance(obj[key], str):
                 target_fields.add(obj[key])
-        for v in obj.values():
-            extract_fields_from_json(v, target_fields)
+        for value in obj.values():
+            extract_fields_from_json(value, target_fields)
     elif isinstance(obj, list):
         for item in obj:
             extract_fields_from_json(item, target_fields)
+
     return target_fields
 
-def audit_field_usage(dataset_id):
-    qs = boto3.client('quicksight', region_name=REGION)
-    log_file = f"logs/usage_{dataset_id.replace('/', '_')}_{datetime.datetime.now().strftime('%Y%m%d')}.txt"
-    
-    global_usage_stats = {}
 
-    with open(log_file, 'w', encoding='utf-8') as f:
-        f.write(f"QUICKSIGHT FIELD USAGE AUDIT\n")
-        f.write(f"Dataset ID: {dataset_id}\n")
-        f.write(f"Date: {datetime.datetime.now()}\n")
-        f.write("="*60 + "\n\n")
+def load_all_analyses(qs_client) -> List[Dict[str, Any]]:
+    return get_all_summaries(qs_client.list_analyses, QS_ACCOUNT_ID, "AnalysisSummaryList")
 
+
+def audit_field_usage(qs_client, logger: Logger, dataset_id: str) -> None:
+    analyses = load_all_analyses(qs_client)
+    global_usage_stats: Dict[str, int] = {}
+    matched_analyses = 0
+
+    logger.log(f"Dataset ID: {dataset_id}")
+    logger.log(f"Total analyses to scan: {len(analyses)}")
+    logger.log("")
+
+    for summary in tqdm(analyses, desc="Scanning analyses"):
+        analysis_id = summary["AnalysisId"]
         try:
-            # 1. Get List of Analyses
-            analyses = []
-            next_token = None
-            while True:
-                kwargs = {'AwsAccountId': QS_ACCOUNT_ID}
-                if next_token: kwargs['NextToken'] = next_token
-                resp = qs.list_analyses(**kwargs)
-                analyses.extend(resp.get('AnalysisSummaryList', []))
-                next_token = resp.get('NextToken')
-                if not next_token: break
+            details = qs_client.describe_analysis_definition(
+                AwsAccountId=QS_ACCOUNT_ID,
+                AnalysisId=analysis_id,
+            )
+        except Exception:
+            continue
 
-            f.write(f"Total Analyses Scanned: {len(analyses)}\n\n")
+        declarations = details.get("Definition", {}).get("DataSetIdentifierDeclarations", [])
+        if not any(dataset_id in str(declaration) for declaration in declarations):
+            continue
 
-            for summary in tqdm(analyses):
-                analysis_id = summary['AnalysisId']
-                
-                # We need the 'Definition' to see specific fields
-                try:
-                    # Note: describe_analysis_definition is the deep-dive API
-                    details = qs.describe_analysis_definition(
-                        AwsAccountId=QS_ACCOUNT_ID, 
-                        AnalysisId=analysis_id
-                    )
-                except Exception:
-                    continue # Some analyses might not support definition (old versions)
+        fields_found = sorted(extract_fields_from_json(details["Definition"]))
+        if not fields_found:
+            continue
 
-                # Check if this analysis even uses our dataset
-                ds_arns = details.get('Definition', {}).get('DataSetIdentifierDeclarations', [])
-                if not any(dataset_id in str(ds) for ds in ds_arns):
-                    continue
+        matched_analyses += 1
+        logger.log(f"ANALYSIS: {summary['Name']} ({analysis_id})")
+        logger.log(f"Fields used: {', '.join(fields_found)}")
+        logger.log("-" * 40)
+        for field in fields_found:
+            global_usage_stats[field] = global_usage_stats.get(field, 0) + 1
 
-                # Crawl the definition for fields
-                fields_found = extract_fields_from_json(details['Definition'])
-                
-                if fields_found:
-                    f.write(f"📊 ANALYSIS: {summary['Name']} ({analysis_id})\n")
-                    f.write(f"   Fields used: {', '.join(sorted(fields_found))}\n")
-                    f.write("-" * 40 + "\n")
-                    
-                    for field in fields_found:
-                        global_usage_stats[field] = global_usage_stats.get(field, 0) + 1
+    logger.log("")
+    logger.log("=" * 60)
+    logger.log("GLOBAL FIELD USAGE SUMMARY")
+    logger.log("=" * 60)
+    logger.log(f"Matched analyses: {matched_analyses}")
+    if not global_usage_stats:
+        logger.log("No field usage found for this dataset.")
+        return
 
-            # 2. Final Global Summary
-            f.write("\n\n" + "="*60 + "\n")
-            f.write("GLOBAL FIELD USAGE SUMMARY (Across all Analyses)\n")
-            f.write("="*60 + "\n")
-            for field, count in sorted(global_usage_stats.items(), key=lambda x: x[1], reverse=True):
-                f.write(f"{field}: used in {count} analyses\n")
+    for field, count in sorted(global_usage_stats.items(), key=lambda item: item[1], reverse=True):
+        logger.log(f"{field}: used in {count} analyses")
 
-            print(f"✅ Audit complete. Results saved to: {log_file}")
 
-        except Exception as e:
-            f.write(f"\nFATAL ERROR: {str(e)}")
-            print(f"❌ Error: {e}")
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument("dataset_id")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Audit which analyses reference fields from one dataset.")
+    parser.add_argument("dataset_id", help="QuickSight dataset id to inspect.")
     args = parser.parse_args()
-    audit_field_usage(args.dataset_id)
+
+    require_env("QS_AWS_ACCOUNT_ID", QS_ACCOUNT_ID)
+    require_env("QS_AWS_REGION", QS_REGION)
+    safe_dataset_id = args.dataset_id.replace("/", "_")
+    log_path = build_log_path(f"usage_{safe_dataset_id}")
+    logger = Logger(log_path, "QUICKSIGHT FIELD USAGE AUDIT")
+
+    try:
+        qs_client = create_quicksight_client()
+        logger.log(f"Connected to QuickSight (Account: {QS_ACCOUNT_ID}, Region: {QS_REGION})")
+        logger.log(f"Log file: {log_path}")
+        logger.log("")
+        audit_field_usage(qs_client, logger, args.dataset_id)
+        logger.log("")
+        logger.log(f"Audit complete. Results saved to: {log_path}")
+    except Exception as exc:
+        logger.log(f"FATAL ERROR: {exc}")
+
+
+if __name__ == "__main__":
+    main()
