@@ -2,7 +2,7 @@
 
 This repository is a CLI-first toolbox for Amazon QuickSight administration, dataset auditing, access management, networking checks, and targeted migration work.
 
-The repository now follows a simple split:
+The repository follows the following split:
 
 - `code/`: Python toolbox scripts
 - `code/README.md`: detailed script catalog with usage examples
