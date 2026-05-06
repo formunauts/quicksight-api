@@ -48,6 +48,19 @@ Every script below includes:
 python code\quicksight_audit.py --dataset-name-contains "marketplace" --calc-fields
 ```
 
+### `qs_dashboard_source.py`
+
+- Purpose: find the source entity behind one or more dashboards and resolve the linked analysis when available.
+- Mutates: no.
+- Inputs: one of `--dashboard-id`, `--dashboard-name`, or `--dashboard-name-contains`.
+- Outputs: a timestamped text report in `logs/`.
+- Example:
+
+```powershell
+python code\qs_dashboard_source.py --dashboard-name "Overall Gross Recurring Production Report"
+python code\qs_dashboard_source.py --dashboard-name-contains "Gross Recurring"
+```
+
 ### `quicksight_datasources.py`
 
 - Purpose: list QuickSight data sources, types, connection details, and VPC connection usage.
@@ -72,6 +85,50 @@ python code\quicksight_datasources.py --type POSTGRESQL AURORA
 
 ```powershell
 python code\qs_dataset_dependencies.py "your-dataset-id"
+```
+
+### `qs_find_analysis_filters.py`
+
+- Purpose: find analyses whose definitions contain a filter that matches a given column, operator, and optionally a literal value.
+- Mutates: no.
+- Notes: refactored onto `qs_common.py`.
+- Inputs: `--field`, optionally `--operator`, `--value`, `--field-match`, `--profile`.
+- Notes: by default the script uses the AWS credentials already active in your shell, for example from `awsume`. Use `--profile` only to override that.
+- Outputs: timestamped text and JSON reports in `logs/`.
+- Example:
+
+```powershell
+python code\qs_find_analysis_filters.py --field customer_id --operator EQUALS
+```
+
+### `qs_analysis_edit_history.py`
+
+- Purpose: inspect CloudTrail for who edited one analysis and when, then show the analysis's current layout type.
+- Mutates: no.
+- Notes: by default the script uses the AWS credentials already active in your shell, for example from `awsume`. It relies on CloudTrail `LookupEvents`, so the searchable window is limited to the last 90 days.
+- Inputs: one of `--analysis-id` or `--analysis-name`, optionally `--days`, `--cloudtrail-region`, `--include-read-only`, `--event-names`, `--profile`, `--show-raw`.
+- Outputs: timestamped text and JSON reports in `logs/`.
+- Example:
+
+```powershell
+python code\qs_analysis_edit_history.py --analysis-id your-analysis-id
+python code\qs_analysis_edit_history.py --analysis-name "Your Analysis Name" --days 30
+```
+
+### `qs_asset_access_report.py`
+
+- Purpose: report the current principals and permission actions on one analysis, one published dashboard, and/or one shared folder.
+- Mutates: no.
+- Notes: this reports current access only. It does not reconstruct historical access at earlier points in time.
+- Inputs: `--analysis-id` or `--analysis-name`, optionally `--dashboard-id`, `--folder-id`, or `--folder-name`.
+- Outputs: timestamped text and JSON reports in `logs/`.
+- Example:
+
+```powershell
+python code\qs_asset_access_report.py --analysis-id your-analysis-id
+python code\qs_asset_access_report.py --dashboard-id your-dashboard-id
+python code\qs_asset_access_report.py --analysis-id your-analysis-id --dashboard-id your-dashboard-id
+python code\qs_asset_access_report.py --folder-id your-folder-id
 ```
 
 ### `qs_audit_dataset_consumers.py`
