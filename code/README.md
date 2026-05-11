@@ -106,13 +106,28 @@ python code\qs_find_analysis_filters.py --field customer_id --operator EQUALS
 - Purpose: inspect CloudTrail for who edited one analysis and when, then show the analysis's current layout type.
 - Mutates: no.
 - Notes: by default the script uses the AWS credentials already active in your shell, for example from `awsume`. It relies on CloudTrail `LookupEvents`, so the searchable window is limited to the last 90 days.
-- Inputs: one of `--analysis-id` or `--analysis-name`, optionally `--days`, `--cloudtrail-region`, `--include-read-only`, `--event-names`, `--profile`, `--show-raw`.
+- Inputs: one of `--analysis-id` or `--analysis-name`, optionally `--days` or `--start-date` with `--end-date`, `--cloudtrail-region`, `--include-read-only`, `--all-event-names`, `--event-names`, `--contains-text`, `--profile`, `--show-raw`.
 - Outputs: timestamped text and JSON reports in `logs/`.
 - Example:
 
 ```powershell
 python code\qs_analysis_edit_history.py --analysis-id your-analysis-id
 python code\qs_analysis_edit_history.py --analysis-name "Your Analysis Name" --days 30
+python code\qs_analysis_edit_history.py --analysis-id your-analysis-id --start-date 2026-04-30 --end-date 2026-05-06 --include-read-only --all-event-names --contains-text export pdf csv xlsx download
+```
+
+### `qs_dashboard_activity_history.py`
+
+- Purpose: inspect CloudTrail for dashboard activity in a time window, including broad export-like searches.
+- Mutates: no.
+- Notes: by default the script uses the AWS credentials already active in your shell, for example from `awsume`. It relies on CloudTrail `LookupEvents`, so the searchable window is limited to the last 90 days.
+- Inputs: one of `--dashboard-id` or `--dashboard-name`, optionally `--days` or `--start-date` with `--end-date`, `--cloudtrail-region`, `--include-read-only`, `--all-event-names`, `--event-names`, `--contains-text`, `--profile`, `--show-raw`.
+- Outputs: timestamped text and JSON reports in `logs/`.
+- Example:
+
+```powershell
+python code\qs_dashboard_activity_history.py --dashboard-id your-dashboard-id
+python code\qs_dashboard_activity_history.py --dashboard-id your-dashboard-id --start-date 2026-04-30 --end-date 2026-05-06 --include-read-only --all-event-names --contains-text export pdf csv xlsx download
 ```
 
 ### `qs_asset_access_report.py`

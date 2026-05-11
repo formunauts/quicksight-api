@@ -2,7 +2,7 @@ import argparse
 import json
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
@@ -18,18 +18,12 @@ from qs_common import (
 
 
 DEFAULT_WRITE_EVENT_NAMES = {
-    "CreateAnalysis",
-    "UpdateAnalysis",
-    "RenameAnalysis",
-    "DeleteAnalysis",
-    "RestoreAnalysis",
-    "UpdateAnalysisAccess",
-    "UpdateAnalysisPermissions",
-    "CreateVisual",
-    "RenameVisual",
-    "DeleteVisual",
+    "CreateDashboard",
+    "UpdateDashboard",
+    "UpdateDashboardAccess",
+    "UpdateDashboardPermissions",
+    "DeleteDashboard",
 }
-LAYOUT_KEYS = ("FreeFormLayout", "GridLayout", "SectionBasedLayout")
 
 
 def normalize(value: Optional[str]) -> str:
@@ -64,46 +58,82 @@ def create_cloudtrail_client_for_session(session: boto3.Session, region: str):
     return session.client("cloudtrail", region_name=region)
 
 
-def load_all_analyses(qs_client) -> List[Dict[str, Any]]:
-    return get_all_summaries(qs_client.list_analyses, QS_ACCOUNT_ID, "AnalysisSummaryList")
+def load_all_dashboards(qs_client) -> List[Dict[str, Any]]:
+    return get_all_summaries(qs_client.list_dashboards, QS_ACCOUNT_ID, "DashboardSummaryList")
 
 
-def find_analysis_target(
+def parse_utc_date_start(value: str) -> datetime:
+    return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+
+def parse_utc_date_end(value: str) -> datetime:
+    return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1) - timedelta(seconds=1)
+
+
+def isoformat_utc(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def parse_source_entity_arn(source_arn: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    if not source_arn or ":" not in source_arn or "/" not in source_arn:
+        return None, None
+
+    resource_path = source_arn.split(":", 5)[-1]
+    resource_type, _, resource_id = resource_path.partition("/")
+    if not resource_type or not resource_id:
+        return None, None
+    return resource_type, resource_id
+
+
+def find_dashboard_target(
     qs_client,
-    analysis_id: Optional[str],
-    analysis_name: Optional[str],
+    dashboard_id: Optional[str],
+    dashboard_name: Optional[str],
 ) -> Dict[str, Any]:
-    if analysis_id:
-        response = qs_client.describe_analysis(
+    if dashboard_id:
+        response = qs_client.describe_dashboard(
             AwsAccountId=QS_ACCOUNT_ID,
-            AnalysisId=analysis_id,
+            DashboardId=dashboard_id,
         )
-        analysis = response.get("Analysis", {})
+        dashboard = response.get("Dashboard", {})
+        version = dashboard.get("Version", {}) or {}
         return {
-            "analysis_id": analysis.get("AnalysisId", analysis_id),
-            "name": analysis.get("Name", analysis_id),
-            "arn": analysis.get("Arn", ""),
-            "created_time": analysis.get("CreatedTime"),
-            "last_updated_time": analysis.get("LastUpdatedTime"),
-            "status": analysis.get("Status"),
+            "dashboard_id": dashboard.get("DashboardId", dashboard_id),
+            "name": dashboard.get("Name", dashboard_id),
+            "arn": dashboard.get("Arn", ""),
+            "created_time": dashboard.get("CreatedTime"),
+            "last_updated_time": dashboard.get("LastUpdatedTime"),
+            "last_published_time": version.get("CreatedTime"),
+            "published_version": version.get("VersionNumber"),
+            "source_entity_arn": version.get("SourceEntityArn"),
+            "status": dashboard.get("Version", {}).get("Status") or dashboard.get("Status"),
         }
 
-    analyses = load_all_analyses(qs_client)
-    matches = [item for item in analyses if item.get("Name") == analysis_name]
+    dashboards = load_all_dashboards(qs_client)
+    matches = [item for item in dashboards if item.get("Name") == dashboard_name]
     if not matches:
-        raise SystemExit(f"No analysis found with exact name: {analysis_name}")
+        raise SystemExit(f"No dashboard found with exact name: {dashboard_name}")
     if len(matches) > 1:
-        names = ", ".join(f"{item['Name']} ({item['AnalysisId']})" for item in matches[:10])
-        raise SystemExit(f"Multiple analyses matched '{analysis_name}': {names}")
+        names = ", ".join(f"{item['Name']} ({item['DashboardId']})" for item in matches[:10])
+        raise SystemExit(f"Multiple dashboards matched '{dashboard_name}': {names}")
 
-    item = matches[0]
+    dashboard_id = matches[0]["DashboardId"]
+    response = qs_client.describe_dashboard(
+        AwsAccountId=QS_ACCOUNT_ID,
+        DashboardId=dashboard_id,
+    )
+    dashboard = response.get("Dashboard", {})
+    version = dashboard.get("Version", {}) or {}
     return {
-        "analysis_id": item.get("AnalysisId"),
-        "name": item.get("Name"),
-        "arn": item.get("Arn", ""),
-        "created_time": item.get("CreatedTime"),
-        "last_updated_time": item.get("LastUpdatedTime"),
-        "status": item.get("Status"),
+        "dashboard_id": dashboard.get("DashboardId", dashboard_id),
+        "name": dashboard.get("Name", dashboard_name),
+        "arn": dashboard.get("Arn", ""),
+        "created_time": dashboard.get("CreatedTime"),
+        "last_updated_time": dashboard.get("LastUpdatedTime"),
+        "last_published_time": version.get("CreatedTime"),
+        "published_version": version.get("VersionNumber"),
+        "source_entity_arn": version.get("SourceEntityArn"),
+        "status": dashboard.get("Version", {}).get("Status") or dashboard.get("Status"),
     }
 
 
@@ -136,63 +166,14 @@ def summarize_user_identity(event: Dict[str, Any], fallback_username: Optional[s
     return "unknown"
 
 
-def isoformat_utc(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def parse_utc_date_start(value: str) -> datetime:
-    return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-
-
-def parse_utc_date_end(value: str) -> datetime:
-    return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1) - timedelta(seconds=1)
-
-
-def collect_layouts(obj: Any, path: str = "Definition") -> List[Dict[str, str]]:
-    layouts: List[Dict[str, str]] = []
-
-    if isinstance(obj, dict):
-        found_keys = [key for key in LAYOUT_KEYS if key in obj and obj.get(key) is not None]
-        for key in found_keys:
-            layouts.append(
-                {
-                    "path": f"{path}.{key}",
-                    "layout_type": key,
-                }
-            )
-        for key, value in obj.items():
-            layouts.extend(collect_layouts(value, f"{path}.{key}"))
-        return layouts
-
-    if isinstance(obj, list):
-        for index, item in enumerate(obj):
-            layouts.extend(collect_layouts(item, f"{path}[{index}]"))
-
-    return layouts
-
-
-def get_current_layout_summary(qs_client, analysis_id: str) -> Dict[str, Any]:
-    response = qs_client.describe_analysis_definition(
-        AwsAccountId=QS_ACCOUNT_ID,
-        AnalysisId=analysis_id,
-    )
-    definition = response.get("Definition", {})
-    occurrences = collect_layouts(definition)
-    layout_types = sorted({item["layout_type"] for item in occurrences})
-    return {
-        "layout_types": layout_types,
-        "occurrences": occurrences,
-    }
-
-
-def event_matches_analysis(
+def event_matches_dashboard(
     event: Dict[str, Any],
     cloudtrail_event: Dict[str, Any],
-    analysis_id: str,
-    analysis_name: str,
-    analysis_arn: str,
+    dashboard_id: str,
+    dashboard_name: str,
+    dashboard_arn: str,
 ) -> bool:
-    targets = [value for value in (analysis_id, analysis_name, analysis_arn) if value]
+    targets = [value for value in (dashboard_id, dashboard_name, dashboard_arn) if value]
     if not targets:
         return False
 
@@ -204,7 +185,7 @@ def event_matches_analysis(
 
     if any(target in resource_names for target in normalized_targets):
         return True
-    if any("analysis" in item for item in resource_types) and any(target in cloudtrail_blob for target in normalized_targets):
+    if any("dashboard" in item for item in resource_types) and any(target in cloudtrail_blob for target in normalized_targets):
         return True
     return any(target in cloudtrail_blob for target in normalized_targets)
 
@@ -239,11 +220,11 @@ def lookup_quicksight_events(
             return events
 
 
-def filter_analysis_events(
+def filter_dashboard_events(
     events: Sequence[Dict[str, Any]],
-    analysis_id: str,
-    analysis_name: str,
-    analysis_arn: str,
+    dashboard_id: str,
+    dashboard_name: str,
+    dashboard_arn: str,
     include_read_only: bool,
     event_names: Optional[Sequence[str]],
     contains_text: Optional[Sequence[str]],
@@ -260,12 +241,12 @@ def filter_analysis_events(
             continue
 
         cloudtrail_event = parse_cloudtrail_event(event.get("CloudTrailEvent", ""))
-        if not event_matches_analysis(
+        if not event_matches_dashboard(
             event,
             cloudtrail_event,
-            analysis_id=analysis_id,
-            analysis_name=analysis_name,
-            analysis_arn=analysis_arn,
+            dashboard_id=dashboard_id,
+            dashboard_name=dashboard_name,
+            dashboard_arn=dashboard_arn,
         ):
             continue
 
@@ -327,11 +308,11 @@ def log_event_summary(logger: Logger, event: Dict[str, Any], show_raw: bool) -> 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Show QuickSight edit history for one analysis from CloudTrail."
+        description="Show QuickSight activity history for one dashboard from CloudTrail."
     )
     target_group = parser.add_mutually_exclusive_group(required=True)
-    target_group.add_argument("--analysis-id", help="QuickSight analysis id.")
-    target_group.add_argument("--analysis-name", help="Exact QuickSight analysis name.")
+    target_group.add_argument("--dashboard-id", help="QuickSight dashboard id.")
+    target_group.add_argument("--dashboard-name", help="Exact QuickSight dashboard name.")
     parser.add_argument(
         "--days",
         type=int,
@@ -354,17 +335,17 @@ def main() -> None:
     parser.add_argument(
         "--all-event-names",
         action="store_true",
-        help="Do not restrict the search to the default analysis write event names.",
+        help="Do not restrict the search to the default dashboard write event names.",
     )
     parser.add_argument(
         "--include-read-only",
         action="store_true",
-        help="Include read-only events like GetAnalysis. By default the report focuses on write/edit activity.",
+        help="Include read-only events like GetDashboard.",
     )
     parser.add_argument(
         "--event-names",
         nargs="+",
-        help="Optional explicit CloudTrail event names to keep, for example UpdateAnalysis RenameAnalysis.",
+        help="Optional explicit CloudTrail event names to keep, for example UpdateDashboard GetDashboard.",
     )
     parser.add_argument(
         "--contains-text",
@@ -402,11 +383,10 @@ def main() -> None:
     if datetime.now(timezone.utc) - start_time > timedelta(days=90, hours=1):
         raise SystemExit("CloudTrail LookupEvents only supports roughly the last 90 days.")
 
-    safe_target = (args.analysis_id or args.analysis_name or "analysis").replace("/", "_").replace(" ", "_")
-    log_path = build_log_path(f"analysis_edit_history_{safe_target}")
-    json_path = build_log_path(f"analysis_edit_history_{safe_target}", extension="json")
-    logger = Logger(log_path, "QUICKSIGHT ANALYSIS EDIT HISTORY")
-
+    safe_target = (args.dashboard_id or args.dashboard_name or "dashboard").replace("/", "_").replace(" ", "_")
+    log_path = build_log_path(f"dashboard_activity_history_{safe_target}")
+    json_path = build_log_path(f"dashboard_activity_history_{safe_target}", extension="json")
+    logger = Logger(log_path, "QUICKSIGHT DASHBOARD ACTIVITY HISTORY")
     session = create_boto3_session(args.profile)
 
     logger.log(f"Account: {QS_ACCOUNT_ID}")
@@ -423,44 +403,48 @@ def main() -> None:
         qs_client = create_quicksight_client_for_session(session, QS_REGION)
         cloudtrail_client = create_cloudtrail_client_for_session(session, args.cloudtrail_region)
 
-        target = find_analysis_target(
+        target = find_dashboard_target(
             qs_client,
-            analysis_id=args.analysis_id,
-            analysis_name=args.analysis_name,
+            dashboard_id=args.dashboard_id,
+            dashboard_name=args.dashboard_name,
         )
-        current_layout = get_current_layout_summary(qs_client, target["analysis_id"])
+        source_type, source_id = parse_source_entity_arn(target.get("source_entity_arn"))
 
         if args.all_event_names:
             event_names = None
         else:
             event_names = args.event_names or sorted(DEFAULT_WRITE_EVENT_NAMES)
+
         quicksight_events = lookup_quicksight_events(
             cloudtrail_client,
             start_time=start_time,
             end_time=end_time,
         )
-        matching_events = filter_analysis_events(
+        matching_events = filter_dashboard_events(
             quicksight_events,
-            analysis_id=target["analysis_id"],
-            analysis_name=target["name"],
-            analysis_arn=target["arn"],
+            dashboard_id=target["dashboard_id"],
+            dashboard_name=target["name"],
+            dashboard_arn=target["arn"],
             include_read_only=args.include_read_only,
             event_names=event_names,
             contains_text=args.contains_text,
         )
 
-        logger.log(f"Analysis: {target['name']} ({target['analysis_id']})")
-        logger.log(f"Analysis ARN: {target['arn'] or 'N/A'}")
+        logger.log(f"Dashboard: {target['name']} ({target['dashboard_id']})")
+        logger.log(f"Dashboard ARN: {target['arn'] or 'N/A'}")
         logger.log(f"Status: {target.get('status') or 'N/A'}")
         logger.log(f"QuickSight last updated time: {target.get('last_updated_time') or 'N/A'}")
-        logger.log(f"Current layout types: {', '.join(current_layout['layout_types']) or 'none detected'}")
+        logger.log(f"Published version: {target.get('published_version') or 'N/A'}")
+        logger.log(f"Last published time: {target.get('last_published_time') or 'N/A'}")
+        logger.log(f"Source entity ARN: {target.get('source_entity_arn') or 'N/A'}")
+        if source_type and source_id:
+            logger.log(f"Source type: {source_type}")
+            logger.log(f"Source id: {source_id}")
         logger.log(f"Event name filter: {', '.join(event_names) if event_names else 'all QuickSight event names'}")
         logger.log(f"Raw text filter: {', '.join(args.contains_text) if args.contains_text else 'none'}")
-        for layout in current_layout["occurrences"]:
-            logger.log(f"  Layout at {layout['path']}: {layout['layout_type']}")
         logger.log("")
         logger.log(f"QuickSight CloudTrail events scanned: {len(quicksight_events)}")
-        logger.log(f"Matching analysis events: {len(matching_events)}")
+        logger.log(f"Matching dashboard events: {len(matching_events)}")
         logger.log("")
 
         for event in matching_events:
@@ -468,8 +452,8 @@ def main() -> None:
             logger.log("")
 
         if not matching_events:
-            logger.log("No matching CloudTrail edit events were found for this analysis in the selected window.")
-            logger.log("If the change is older than 90 days, you would need a CloudTrail trail or Lake query instead of LookupEvents.")
+            logger.log("No matching CloudTrail events were found for this dashboard in the selected window.")
+            logger.log("If the activity is older than 90 days, you would need a CloudTrail trail or Lake query instead of LookupEvents.")
 
         payload = {
             "account_id": QS_ACCOUNT_ID,
@@ -478,8 +462,9 @@ def main() -> None:
             "profile": args.profile,
             "time_window_start": isoformat_utc(start_time),
             "time_window_end": isoformat_utc(end_time),
-            "analysis": serialize_for_json(target),
-            "current_layout": current_layout,
+            "dashboard": serialize_for_json(target),
+            "source_type": source_type,
+            "source_id": source_id,
             "event_names_filter": event_names,
             "contains_text_filter": args.contains_text,
             "include_read_only": args.include_read_only,
