@@ -83,6 +83,19 @@ Use [code/README.md](code/README.md) for the full catalog. It documents:
 - what outputs it writes
 - example commands
 
+For checking whether planned database table deletions are still referenced by QuickSight datasets, use the read-only table reference audit:
+
+```powershell
+python code\qs_find_table_references.py --tables bureau_unfinisheddonation bureau_unfinisheddonationadditionalsignature bureau_unfinisheddonationadditionaltextfield bureau_unfinisheddonationrangeslider bureau_unfinisheddonation_form_additional_checkboxes bureau_unfinisheddonation_form_additional_radio_buttons
+```
+
+For the Donation Table Merge cleanup, generate and review a migration plan before applying dataset SQL changes:
+
+```powershell
+python code\qs_migrate_unfinished_donation_tables.py --audit-file .\logs\table_reference_audit_YYYYMMDD_HHMMSS.json
+python code\qs_migrate_unfinished_donation_tables.py --audit-file .\logs\table_reference_audit_YYYYMMDD_HHMMSS.json --apply --allow-warnings --wait-for-refresh --between-refresh-delay-seconds 30 --continue-on-failure
+```
+
 The shared helper module [code/qs_common.py](code/qs_common.py) is now the base for newer and refactored scripts, so future toolbox work should build on that instead of duplicating env loading, pagination, and logging.
 
 ### Generated artifacts
@@ -100,4 +113,3 @@ The cleanup helper keeps `logs/commands.txt` by default and removes the rest.
 ### Miscellaneous shell scripts
 
 `scripts/` is not part of the main QuickSight CLI toolbox. At the moment it only contains one unrelated operational helper, documented in [scripts/README.md](scripts/README.md).
-

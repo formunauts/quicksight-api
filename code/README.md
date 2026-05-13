@@ -158,6 +158,34 @@ python code\qs_asset_access_report.py --folder-id your-folder-id
 python code\qs_audit_dataset_consumers.py --plan-file .\logs\paymentattempt_failed_refresh_targets_YYYYMMDD_HHMMSS_candidates.json
 ```
 
+### `qs_find_table_references.py`
+
+- Purpose: find QuickSight datasets whose physical tables or custom SQL reference one or more database tables, then report analyses and dashboards that consume those datasets.
+- Mutates: no.
+- Inputs: `--tables` or `--table-file`, optionally `--dataset-name-contains`, `--limit`, or `--skip-consumers`.
+- Outputs: timestamped text and JSON reports in `logs/`.
+- Notes: table matching is case-insensitive and identifier-aware, so `bureau_unfinisheddonation` does not match `bureau_unfinisheddonationrangeslider`.
+- Example:
+
+```powershell
+python code\qs_find_table_references.py --tables bureau_unfinisheddonation bureau_unfinisheddonationadditionalsignature bureau_unfinisheddonationadditionaltextfield bureau_unfinisheddonationrangeslider bureau_unfinisheddonation_form_additional_checkboxes bureau_unfinisheddonation_form_additional_radio_buttons
+python code\qs_find_table_references.py --table-file .\tables-to-check.txt
+```
+
+### `qs_migrate_unfinished_donation_tables.py`
+
+- Purpose: migrate QuickSight dataset custom SQL from the old `bureau_unfinisheddonation` table to filtered `bureau_donation` subqueries after the Donation Table Merge.
+- Mutates: yes, only with `--apply`.
+- Inputs: `--audit-file` from `qs_find_table_references.py`, or explicit `--dataset-ids`.
+- Outputs: full dataset backups, a migration plan JSON, and a text log in `logs/`.
+- Notes: dry run first. The script flags `SELECT *` for review and will not apply warning-bearing changes unless `--allow-warnings` is provided. Use `--wait-for-refresh` to refresh SPICE datasets strictly one at a time; the script waits until each ingestion finishes before moving to the next dataset.
+- Example:
+
+```powershell
+python code\qs_migrate_unfinished_donation_tables.py --audit-file .\logs\table_reference_audit_YYYYMMDD_HHMMSS.json
+python code\qs_migrate_unfinished_donation_tables.py --audit-file .\logs\table_reference_audit_YYYYMMDD_HHMMSS.json --apply --allow-warnings --wait-for-refresh --between-refresh-delay-seconds 30 --continue-on-failure
+```
+
 ### `qs_delete_unused_datasets.py`
 
 - Purpose: delete datasets that a consumer audit marks as unused.
@@ -217,12 +245,13 @@ python code\quicksight_share_with_team.py --data-source-id ds-example --user-arn
 - Purpose: grant a QuickSight user access to datasets, analyses, and dashboards by copying an existing action set from each resource.
 - Mutates: yes, only with `--apply`.
 - Inputs: `--user`, plus either `--all-datasets`, `--all-analyses`, `--all-dashboards`, or a dataset `--plan-file`.
+- Notes: use `--continue-on-error` for broad grants so one failed resource does not stop the run. Retryable QuickSight throttling errors are retried with exponential backoff via `--retry-attempts` and `--retry-base-seconds`.
 - Outputs: JSON and text reports in `logs/`.
 - Example:
 
 ```powershell
 python code\qs_grant_user_access.py --user daniel@formunauts.at --all-datasets --all-analyses --all-dashboards
-python code\qs_grant_user_access.py --user daniel@formunauts.at --all-datasets --all-analyses --all-dashboards --apply
+python code\qs_grant_user_access.py --user daniel@formunauts.at --all-datasets --all-analyses --all-dashboards --apply --continue-on-error
 ```
 
 ## Paymentattempt Migration Helpers

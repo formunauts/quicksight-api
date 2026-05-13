@@ -2,6 +2,7 @@ import argparse
 import datetime
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import boto3
@@ -18,6 +19,12 @@ LOG_DIR = os.path.join(ROOT_DIR, "logs")
 TIMESTAMP = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 RESOURCE_TYPES = ("datasets", "analyses", "dashboards")
+RETRYABLE_ERROR_CODES = {
+    "ThrottlingException",
+    "TooManyRequestsException",
+    "TooManyRequests",
+    "LimitExceededException",
+}
 
 
 class Logger:
@@ -52,6 +59,38 @@ def get_all_summaries(func, account_id: str, key_name: str) -> List[Dict[str, An
         next_token = response.get("NextToken")
         if not next_token:
             return items
+
+
+def is_retryable_error(exc: Exception) -> bool:
+    if not isinstance(exc, ClientError):
+        return False
+    error_code = exc.response.get("Error", {}).get("Code")
+    return error_code in RETRYABLE_ERROR_CODES
+
+
+def call_with_retries(
+    logger: Logger,
+    label: str,
+    func,
+    retry_attempts: int,
+    retry_base_seconds: float,
+    *args,
+    **kwargs,
+):
+    attempt = 1
+    while True:
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:
+            if attempt >= retry_attempts or not is_retryable_error(exc):
+                raise
+            wait_seconds = retry_base_seconds * (2 ** (attempt - 1))
+            logger.log(
+                f"  Retryable QuickSight error during {label}: {exc}. "
+                f"Retrying in {wait_seconds:.1f}s ({attempt}/{retry_attempts - 1})."
+            )
+            time.sleep(wait_seconds)
+            attempt += 1
 
 
 def load_plan_datasets(plan_file: str) -> List[Dict[str, Any]]:
@@ -296,6 +335,23 @@ def main() -> None:
         action="store_true",
         help="Actually apply the permission grants. Without this flag, the script is dry-run only.",
     )
+    parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Continue with the next resource if permission lookup or grant fails.",
+    )
+    parser.add_argument(
+        "--retry-attempts",
+        type=int,
+        default=8,
+        help="Attempts for retryable QuickSight throttling errors.",
+    )
+    parser.add_argument(
+        "--retry-base-seconds",
+        type=float,
+        default=2.0,
+        help="Initial backoff delay for retryable QuickSight throttling errors.",
+    )
     args = parser.parse_args()
 
     if not args.all_datasets and not args.plan_file and not args.all_analyses and not args.all_dashboards:
@@ -312,6 +368,8 @@ def main() -> None:
     if args.plan_file:
         logger.log(f"Dataset scope from plan file: {os.path.abspath(args.plan_file)}")
     logger.log(f"Action template mode: {args.action_template}")
+    logger.log(f"Retry attempts: {args.retry_attempts}, retry base seconds: {args.retry_base_seconds}")
+    logger.log(f"Continue on error: {args.continue_on_error}")
 
     dataset_targets = collect_dataset_targets(qs, args)
     analysis_targets = collect_analysis_targets(qs, args)
@@ -363,20 +421,41 @@ def main() -> None:
             skipped,
             errors,
         )
-        permissions = describe_dataset_permissions(qs, dataset_id)
-        desired_actions = choose_actions_from_permissions(permissions, args.action_template)
-        existing_actions = extract_existing_actions(permissions, target_arn)
-        missing_actions = diff_actions(desired_actions, existing_actions)
         row = {
             "name": name,
             "data_set_id": dataset_id,
-            "desired_actions": desired_actions,
-            "existing_actions": existing_actions,
-            "missing_actions": missing_actions,
+            "desired_actions": [],
+            "existing_actions": [],
+            "missing_actions": [],
             "applied": False,
             "status": None,
             "error": None,
         }
+        try:
+            permissions = call_with_retries(
+                logger,
+                "DescribeDataSetPermissions",
+                describe_dataset_permissions,
+                args.retry_attempts,
+                args.retry_base_seconds,
+                qs,
+                dataset_id,
+            )
+            desired_actions = choose_actions_from_permissions(permissions, args.action_template)
+            existing_actions = extract_existing_actions(permissions, target_arn)
+            missing_actions = diff_actions(desired_actions, existing_actions)
+            row["desired_actions"] = desired_actions
+            row["existing_actions"] = existing_actions
+            row["missing_actions"] = missing_actions
+        except Exception as exc:
+            row["error"] = str(exc)
+            errors += 1
+            logger.log(f"  Error while describing dataset permissions: {exc}")
+            report["datasets"].append(row)
+            if args.continue_on_error:
+                continue
+            raise
+
         if not desired_actions or not missing_actions:
             skipped += 1
             if not desired_actions:
@@ -385,7 +464,17 @@ def main() -> None:
                 logger.log("  Skipped: target user already has all desired dataset actions.")
         elif args.apply:
             try:
-                response = grant_dataset_permissions(qs, dataset_id, target_arn, missing_actions)
+                response = call_with_retries(
+                    logger,
+                    "UpdateDataSetPermissions",
+                    grant_dataset_permissions,
+                    args.retry_attempts,
+                    args.retry_base_seconds,
+                    qs,
+                    dataset_id,
+                    target_arn,
+                    missing_actions,
+                )
                 row["applied"] = True
                 row["status"] = response.get("Status")
                 applied += 1
@@ -397,6 +486,9 @@ def main() -> None:
                 row["error"] = str(exc)
                 errors += 1
                 logger.log(f"  Error while granting dataset access: {exc}")
+                if not args.continue_on_error:
+                    report["datasets"].append(row)
+                    raise
         else:
             logger.log(
                 f"  Preview: would grant {len(missing_actions)} dataset actions "
@@ -418,20 +510,41 @@ def main() -> None:
             skipped,
             errors,
         )
-        permissions = describe_analysis_permissions(qs, analysis_id)
-        desired_actions = choose_actions_from_permissions(permissions, args.action_template)
-        existing_actions = extract_existing_actions(permissions, target_arn)
-        missing_actions = diff_actions(desired_actions, existing_actions)
         row = {
             "name": name,
             "analysis_id": analysis_id,
-            "desired_actions": desired_actions,
-            "existing_actions": existing_actions,
-            "missing_actions": missing_actions,
+            "desired_actions": [],
+            "existing_actions": [],
+            "missing_actions": [],
             "applied": False,
             "status": None,
             "error": None,
         }
+        try:
+            permissions = call_with_retries(
+                logger,
+                "DescribeAnalysisPermissions",
+                describe_analysis_permissions,
+                args.retry_attempts,
+                args.retry_base_seconds,
+                qs,
+                analysis_id,
+            )
+            desired_actions = choose_actions_from_permissions(permissions, args.action_template)
+            existing_actions = extract_existing_actions(permissions, target_arn)
+            missing_actions = diff_actions(desired_actions, existing_actions)
+            row["desired_actions"] = desired_actions
+            row["existing_actions"] = existing_actions
+            row["missing_actions"] = missing_actions
+        except Exception as exc:
+            row["error"] = str(exc)
+            errors += 1
+            logger.log(f"  Error while describing analysis permissions: {exc}")
+            report["analyses"].append(row)
+            if args.continue_on_error:
+                continue
+            raise
+
         if not desired_actions or not missing_actions:
             skipped += 1
             if not desired_actions:
@@ -440,7 +553,17 @@ def main() -> None:
                 logger.log("  Skipped: target user already has all desired analysis actions.")
         elif args.apply:
             try:
-                response = grant_analysis_permissions(qs, analysis_id, target_arn, missing_actions)
+                response = call_with_retries(
+                    logger,
+                    "UpdateAnalysisPermissions",
+                    grant_analysis_permissions,
+                    args.retry_attempts,
+                    args.retry_base_seconds,
+                    qs,
+                    analysis_id,
+                    target_arn,
+                    missing_actions,
+                )
                 row["applied"] = True
                 row["status"] = response.get("Status")
                 applied += 1
@@ -452,6 +575,9 @@ def main() -> None:
                 row["error"] = str(exc)
                 errors += 1
                 logger.log(f"  Error while granting analysis access: {exc}")
+                if not args.continue_on_error:
+                    report["analyses"].append(row)
+                    raise
         else:
             logger.log(
                 f"  Preview: would grant {len(missing_actions)} analysis actions "
@@ -473,20 +599,41 @@ def main() -> None:
             skipped,
             errors,
         )
-        permissions = describe_dashboard_permissions(qs, dashboard_id)
-        desired_actions = choose_actions_from_permissions(permissions, args.action_template)
-        existing_actions = extract_existing_actions(permissions, target_arn)
-        missing_actions = diff_actions(desired_actions, existing_actions)
         row = {
             "name": name,
             "dashboard_id": dashboard_id,
-            "desired_actions": desired_actions,
-            "existing_actions": existing_actions,
-            "missing_actions": missing_actions,
+            "desired_actions": [],
+            "existing_actions": [],
+            "missing_actions": [],
             "applied": False,
             "status": None,
             "error": None,
         }
+        try:
+            permissions = call_with_retries(
+                logger,
+                "DescribeDashboardPermissions",
+                describe_dashboard_permissions,
+                args.retry_attempts,
+                args.retry_base_seconds,
+                qs,
+                dashboard_id,
+            )
+            desired_actions = choose_actions_from_permissions(permissions, args.action_template)
+            existing_actions = extract_existing_actions(permissions, target_arn)
+            missing_actions = diff_actions(desired_actions, existing_actions)
+            row["desired_actions"] = desired_actions
+            row["existing_actions"] = existing_actions
+            row["missing_actions"] = missing_actions
+        except Exception as exc:
+            row["error"] = str(exc)
+            errors += 1
+            logger.log(f"  Error while describing dashboard permissions: {exc}")
+            report["dashboards"].append(row)
+            if args.continue_on_error:
+                continue
+            raise
+
         if not desired_actions or not missing_actions:
             skipped += 1
             if not desired_actions:
@@ -495,7 +642,17 @@ def main() -> None:
                 logger.log("  Skipped: target user already has all desired dashboard actions.")
         elif args.apply:
             try:
-                response = grant_dashboard_permissions(qs, dashboard_id, target_arn, missing_actions)
+                response = call_with_retries(
+                    logger,
+                    "UpdateDashboardPermissions",
+                    grant_dashboard_permissions,
+                    args.retry_attempts,
+                    args.retry_base_seconds,
+                    qs,
+                    dashboard_id,
+                    target_arn,
+                    missing_actions,
+                )
                 row["applied"] = True
                 row["status"] = response.get("Status")
                 applied += 1
@@ -507,6 +664,9 @@ def main() -> None:
                 row["error"] = str(exc)
                 errors += 1
                 logger.log(f"  Error while granting dashboard access: {exc}")
+                if not args.continue_on_error:
+                    report["dashboards"].append(row)
+                    raise
         else:
             logger.log(
                 f"  Preview: would grant {len(missing_actions)} dashboard actions "
