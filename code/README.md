@@ -146,6 +146,21 @@ python code\qs_asset_access_report.py --analysis-id your-analysis-id --dashboard
 python code\qs_asset_access_report.py --folder-id your-folder-id
 ```
 
+### `qs_user_dashboard_access.py`
+
+- Purpose: list dashboards a specific QuickSight user can access (directly or via group membership), including dashboard names and the linked source analysis names when available.
+- Mutates: no.
+- Inputs: one of `--user-arn`, `--user-email`, or `--user-name`; optional `--dashboard-name-contains`, `--retry-attempts`, `--retry-base-seconds`, `--between-dashboard-seconds`.
+- Outputs: timestamped text and JSON reports in `logs/`.
+- Notes: includes retry/backoff for QuickSight throttling and can pace dashboard permission calls to avoid burst limits.
+- Example:
+
+```powershell
+python code\qs_user_dashboard_access.py --user-email user@example.com
+python code\qs_user_dashboard_access.py --user-name your-qs-username --dashboard-name-contains payment
+python code\qs_user_dashboard_access.py --user-email user@example.com --retry-attempts 10 --retry-base-seconds 1.5 --between-dashboard-seconds 0.25
+```
+
 ### `qs_audit_dataset_consumers.py`
 
 - Purpose: find which analyses and dashboards use datasets from a migration or target plan.
