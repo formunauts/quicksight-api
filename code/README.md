@@ -74,6 +74,19 @@ python code\qs_dashboard_source.py --dashboard-name-contains "Gross Recurring"
 python code\quicksight_datasources.py --type POSTGRESQL AURORA
 ```
 
+### `qs_datasource_dependencies.py`
+
+- Purpose: find datasets that use one or more QuickSight data sources, then list analyses that consume those datasets.
+- Mutates: no.
+- Inputs: one of `--data-source-id`, `--data-source-name`, or `--data-source-name-contains`, optionally `--dataset-name-contains`, `--limit`, `--skip-analyses`.
+- Outputs: timestamped text and JSON reports in `logs/`.
+- Example:
+
+```powershell
+python code\qs_datasource_dependencies.py --data-source-name "LiveDataBase"
+python code\qs_datasource_dependencies.py --data-source-name-contains "Live" --dataset-name-contains payment
+```
+
 ### `qs_dataset_dependencies.py`
 
 - Purpose: inspect which analyses appear to reference fields from a given dataset.
@@ -253,6 +266,20 @@ python code\quicksight_share_source.py --data-source-id ds-example --user-arn ar
 ```powershell
 python code\quicksight_share_with_team.py --data-source-id ds-example --user-arns arn1 arn2
 python code\quicksight_share_with_team.py --data-source-id ds-example --user-arns arn1 arn2 --apply
+```
+
+### `qs_update_datasource_connection.py`
+
+- Purpose: update one QuickSight data source connection target in place (for example switch writer host to reader host or writer instance id to reader instance id) while keeping the same data source id and ARN.
+- Mutates: yes, only with `--apply`.
+- Inputs: one target selector (`--data-source-id` or `--data-source-name`) plus one connection source (`--new-host`, `--new-instance-id`, `--from-data-source-id`, or `--from-data-source-name`), optionally `--new-port`, `--new-database`.
+- Outputs: timestamped text and JSON reports in `logs/`.
+- Notes: this is the safest path when many datasets depend on one data source, because datasets remain attached to the same data source ARN. If the role lacks `quicksight:CopyDataSourceCredentials`, provide `DB_USER` and `DB_PASS` in environment or use `--db-user` and `--db-pass` so the update can use `CredentialPair` instead of credential copy.
+- Example:
+
+```powershell
+python code\qs_update_datasource_connection.py --data-source-name "LiveDataBase" --from-data-source-name "formunauts-prod-rds-data-source"
+python code\qs_update_datasource_connection.py --data-source-name "LiveDataBase" --from-data-source-name "formunauts-prod-rds-data-source" --apply
 ```
 
 ### `qs_grant_user_access.py`
