@@ -40,12 +40,13 @@ Every script below includes:
 - Purpose: broad QuickSight inventory and search helper for datasets, calculated fields, analyses, and dashboards.
 - Mutates: no.
 - Notes: refactored onto `qs_common.py`.
-- Inputs: CLI filters such as `--datasets`, `--dataset-name-contains`, `--calc-fields`, `--analysis`, `--dashboard`.
+- Inputs: CLI filters such as `--datasets`, `--dataset-name-contains`, `--calc-fields`, `--analysis`, `--dashboard`; optional `--all-regions` for cross-region scans.
 - Outputs: a timestamped text report in `logs/`.
 - Example:
 
 ```powershell
 python code\quicksight_audit.py --dataset-name-contains "marketplace" --calc-fields
+python code\quicksight_audit.py --lookup-ids your-id --all-regions
 ```
 
 ### `qs_dashboard_source.py`
@@ -59,6 +60,21 @@ python code\quicksight_audit.py --dataset-name-contains "marketplace" --calc-fie
 ```powershell
 python code\qs_dashboard_source.py --dashboard-name "Overall Gross Recurring Production Report"
 python code\qs_dashboard_source.py --dashboard-name-contains "Gross Recurring"
+```
+
+### `qs_dashboard_report_schedule_audit.py`
+
+- Purpose: audit dashboard snapshot/report schedules and executions using CloudTrail (`StartDashboardSnapshotJob`, `StartDashboardSnapshotJobSchedule`) plus snapshot job detail APIs.
+- Mutates: no.
+- Inputs: optional `--mystery-ids`, `--days` or `--start-date`/`--end-date`, optional `--dashboard-id-contains`, `--limit-dashboards`, `--all-regions`, `--cloudtrail-region`.
+- Outputs: timestamped text and JSON reports in `logs/`, including execution timestamps/status when resolvable.
+- Notes: QuickSight currently exposes start/describe snapshot-job APIs but no list-schedules API in this SDK model, so schedule visibility is reconstructed from CloudTrail events.
+- Example:
+
+```powershell
+python code\qs_dashboard_report_schedule_audit.py --days 14
+python code\qs_dashboard_report_schedule_audit.py --mystery-ids abc123 def456 --all-regions
+python code\qs_dashboard_report_schedule_audit.py --start-date 2026-07-01 --end-date 2026-07-20 --dashboard-id-contains a1904e
 ```
 
 ### `quicksight_datasources.py`
@@ -98,6 +114,36 @@ python code\qs_datasource_dependencies.py --data-source-name-contains "Live" --d
 
 ```powershell
 python code\qs_dataset_dependencies.py "your-dataset-id"
+```
+
+### `qs_dataset_refresh_audit.py`
+
+- Purpose: scan datasets across the account, inspect recent ingestion history and refresh schedules, and match provided mystery IDs.
+- Mutates: no.
+- Inputs: required `--mystery-ids`, optionally `--dataset-name-contains`, `--limit`, `--max-ingestions-per-dataset`, `--all-regions`.
+- Outputs: timestamped text and JSON reports in `logs/`.
+- Example:
+
+```powershell
+python code\qs_dataset_refresh_audit.py --mystery-ids id_1 id_2 id_3 id_4
+python code\qs_dataset_refresh_audit.py --mystery-ids id_1 --dataset-name-contains payment --max-ingestions-per-dataset 50
+python code\qs_dataset_refresh_audit.py --mystery-ids id_1 --all-regions
+```
+
+### `qs_inspect_dataset_table_maps.py`
+
+- Purpose: inspect `PhysicalTableMap` and `LogicalTableMap` across datasets, including table IDs and source metadata.
+- Mutates: no.
+- Inputs: optional `--dataset-ids`, `--dataset-name-contains`, `--physical-table-ids`, `--logical-table-ids`, `--table-id-contains`, `--limit`, `--all-regions`.
+- Error handling: fail-fast by default; use `--continue-on-error` to keep scanning after describe failures.
+- Outputs: timestamped text and JSON reports in `logs/`.
+- Example:
+
+```powershell
+python code\qs_inspect_dataset_table_maps.py
+python code\qs_inspect_dataset_table_maps.py --table-id-contains physical --dataset-name-contains payment
+python code\qs_inspect_dataset_table_maps.py --physical-table-ids pt_123 pt_456 --continue-on-error
+python code\qs_inspect_dataset_table_maps.py --table-id-contains lt_ --all-regions
 ```
 
 ### `qs_find_analysis_filters.py`
