@@ -246,6 +246,23 @@ python code\qs_find_table_references.py --tables bureau_unfinisheddonation burea
 python code\qs_find_table_references.py --table-file .\tables-to-check.txt
 ```
 
+### `qs_find_field_usage.py`
+
+- Purpose: scan QuickSight datasets, analyses, and dashboards for usage of one or more table names and/or column names.
+- Mutates: no.
+- Inputs: `--tables` and/or `--columns`, optionally `--table-file`, `--column-file`, `--dataset-name-contains`, `--limit`, `--skip-analyses`, `--skip-dashboards`, `--only-consumers-of-matched-datasets`, `--write-triage-csv`, `--check-refresh-schedules`, `--check-dataset-calculated-fields`, `--check-analysis-calculated-fields`, `--check-custom-sql-column-mentions`.
+- Outputs: timestamped text and JSON reports in `logs/`; optional CSV triage report with one row per matched dataset.
+- Notes: this is the broadest read-only impact check for schema changes. It can find references in dataset SQL and in downstream analysis/dashboard definitions. The summary includes `hard_dependency_datasets` versus `string_only_datasets`, refresh-schedule coverage, and `CRITICAL`/`HIGH`/`MEDIUM`/`LOW` priority labels across datasets, analyses, and dashboards. `CRITICAL` is assigned when dataset/analysis calculated fields reference target columns, or when target columns are directly mentioned in dataset custom SQL.
+- Example:
+
+```powershell
+python code\qs_find_field_usage.py --tables bureau_donation --columns was_callback self_checkout_journey bureau_donation.was_callback bureau_donation.self_checkout_journey
+python code\qs_find_field_usage.py --column-file .\columns-to-check.txt --only-consumers-of-matched-datasets
+python code\qs_find_field_usage.py --columns was_callback self_checkout_journey --write-triage-csv
+python code\qs_find_field_usage.py --columns was_callback self_checkout_journey --write-triage-csv --check-refresh-schedules
+python code\qs_find_field_usage.py --columns was_callback self_checkout_journey bureau_donation.was_callback bureau_donation.self_checkout_journey --write-triage-csv --check-refresh-schedules --check-dataset-calculated-fields --check-analysis-calculated-fields --check-custom-sql-column-mentions
+```
+
 ### `qs_migrate_unfinished_donation_tables.py`
 
 - Purpose: migrate QuickSight dataset custom SQL from the old `bureau_unfinisheddonation` table to filtered `bureau_donation` subqueries after the Donation Table Merge.
@@ -258,6 +275,20 @@ python code\qs_find_table_references.py --table-file .\tables-to-check.txt
 ```powershell
 python code\qs_migrate_unfinished_donation_tables.py --audit-file .\logs\table_reference_audit_YYYYMMDD_HHMMSS.json
 python code\qs_migrate_unfinished_donation_tables.py --audit-file .\logs\table_reference_audit_YYYYMMDD_HHMMSS.json --apply --allow-warnings --wait-for-refresh --between-refresh-delay-seconds 30 --continue-on-failure
+```
+
+### `qs_migrate_custom_sql_datasource.py`
+
+- Purpose: update dataset physical tables so entries still using one legacy QuickSight data source are switched to a target data source.
+- Mutates: yes, only with `--apply`.
+- Inputs: required `--dataset-ids`, `--legacy-data-source-name`, and `--target-data-source-name`.
+- Outputs: timestamped text and JSON plan/result files in `logs/`.
+- Notes: dry run first. The script rewrites `PhysicalTableMap.*.(CustomSql|RelationalTable|S3Source).DataSourceArn` values that match the resolved legacy source ARN exactly.
+- Example:
+
+```powershell
+python code\qs_migrate_custom_sql_datasource.py --dataset-ids ds_1 ds_2 --legacy-data-source-name "LiveDataBase" --target-data-source-name "formunauts-prod-rds-data-source"
+python code\qs_migrate_custom_sql_datasource.py --dataset-ids ds_1 ds_2 --legacy-data-source-name "LiveDataBase" --target-data-source-name "formunauts-prod-rds-data-source" --apply
 ```
 
 ### `qs_delete_unused_datasets.py`
