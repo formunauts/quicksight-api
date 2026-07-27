@@ -220,6 +220,20 @@ python code\qs_user_dashboard_access.py --user-name your-qs-username --dashboard
 python code\qs_user_dashboard_access.py --user-email user@example.com --retry-attempts 10 --retry-base-seconds 1.5 --between-dashboard-seconds 0.25
 ```
 
+### `qs_user_dashboard_dataset_filter_report.py`
+
+- Purpose: produce a user-to-dashboard-to-dataset access table and include extracted filter hints for `organization_id`, `customer_id`, and `fundraiser_coder` from dashboard definitions, plus dataset-side filter hints for `organization_id`, `customer_id`, and `fundraiser_coder`.
+- Mutates: no.
+- Inputs: optional `--namespace`, `--dashboard-name-contains`, `--user-email-contains`, `--max-users`, `--retry-attempts`, `--retry-base-seconds`.
+- Outputs: timestamped CSV, JSON, and text log reports in `logs/`.
+- Notes: dashboard filter output is based on saved definition literals/parameters, not per-viewer runtime filter choices. Dataset-side hints include logical-table condition expressions, row-level-security tag configuration hints, and Custom SQL `WHERE` clause snippets when they reference the target fields. For dataset row-level-security datasets, QuickSight APIs do not expose row values; the script reports structural hints when detectable.
+- Example:
+
+```powershell
+python code\qs_user_dashboard_dataset_filter_report.py
+python code\qs_user_dashboard_dataset_filter_report.py --dashboard-name-contains payment --user-email-contains @formunauts.com
+```
+
 ### `qs_audit_dataset_consumers.py`
 
 - Purpose: find which analyses and dashboards use datasets from a migration or target plan.
