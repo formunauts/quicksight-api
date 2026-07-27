@@ -25,8 +25,17 @@ RETRYABLE_ERROR_CODES = {
     "LimitExceededException",
 }
 
-DASHBOARD_FILTER_FIELDS = ["organization_id", "customer_id", "fundraiser_coder"]
-DATASET_FILTER_FIELDS = ["organization_id", "customer_id", "fundraiser_coder"]
+TARGET_FILTER_FIELD_ALIASES: Dict[str, List[str]] = {
+    "organization_id": ["organization_id", "organisation_id"],
+    "organization_name": ["organization_name", "organisation_name"],
+    "customer_id": ["customer_id"],
+    "customer_name": ["customer_name"],
+    "fundraiser_coder": ["fundraiser_coder", "fundraiser_code"],
+    "fundraiser_name": ["fundraiser_name"],
+    "campaign_id": ["campaign_id"],
+    "campaign_name": ["campaign_name"],
+}
+OUTPUT_FILTER_KEYS = list(TARGET_FILTER_FIELD_ALIASES.keys())
 
 OPERATOR_KEYS = {"MatchOperator", "Operator"}
 FILTER_VALUE_KEYS = {
@@ -195,12 +204,27 @@ def field_name_matches(column_names: Set[str], field_name: str) -> bool:
     return any(normalize(name) == needle for name in column_names)
 
 
+def field_name_matches_any(column_names: Set[str], aliases: List[str]) -> bool:
+    normalized_columns = {normalize(name) for name in column_names}
+    normalized_aliases = {normalize(alias) for alias in aliases}
+    return bool(normalized_columns.intersection(normalized_aliases))
+
+
+def text_mentions_any_alias(text: str, aliases: List[str]) -> bool:
+    text_lc = normalize(text)
+    for alias in aliases:
+        pattern = rf"(?<![a-z0-9_]){re.escape(normalize(alias))}(?![a-z0-9_])"
+        if re.search(pattern, text_lc):
+            return True
+    return False
+
+
 def find_field_filter_literals(
     obj: Any,
-    field_names: List[str],
+    field_aliases: Dict[str, List[str]],
     path: str = "Definition",
 ) -> Dict[str, Set[str]]:
-    found: Dict[str, Set[str]] = {name: set() for name in field_names}
+    found: Dict[str, Set[str]] = {name: set() for name in field_aliases}
 
     if isinstance(obj, dict):
         if is_filter_like(obj):
@@ -208,14 +232,14 @@ def find_field_filter_literals(
             operators = collect_strings_for_keys(obj, OPERATOR_KEYS)
             values = collect_strings_for_keys(obj, FILTER_VALUE_KEYS)
 
-            for field_name in field_names:
-                if not field_name_matches(column_names, field_name):
+            for field_name, aliases in field_aliases.items():
+                if not field_name_matches_any(column_names, aliases):
                     continue
 
                 literal_values = [
                     value
                     for value in values
-                    if normalize(value) != normalize(field_name)
+                    if normalize(value) not in {normalize(alias) for alias in aliases}
                 ]
                 if literal_values:
                     found[field_name].update(literal_values)
@@ -224,14 +248,14 @@ def find_field_filter_literals(
                     found[field_name].add(f"<filter_defined:{operator_display}:{path}>")
 
         for key, child in obj.items():
-            child_found = find_field_filter_literals(child, field_names, path=f"{path}.{key}")
+            child_found = find_field_filter_literals(child, field_aliases, path=f"{path}.{key}")
             for field_name, values in child_found.items():
                 found[field_name].update(values)
         return found
 
     if isinstance(obj, list):
         for index, child in enumerate(obj):
-            child_found = find_field_filter_literals(child, field_names, path=f"{path}[{index}]")
+            child_found = find_field_filter_literals(child, field_aliases, path=f"{path}[{index}]")
             for field_name, values in child_found.items():
                 found[field_name].update(values)
 
@@ -278,8 +302,11 @@ def truncate_text(value: str, limit: int = 280) -> str:
     return compact[: limit - 3] + "..."
 
 
-def extract_custom_sql_where_filters(dataset: Dict[str, Any], target_fields: List[str]) -> Dict[str, Set[str]]:
-    filters: Dict[str, Set[str]] = {field: set() for field in target_fields}
+def extract_custom_sql_where_filters(
+    dataset: Dict[str, Any],
+    target_field_aliases: Dict[str, List[str]],
+) -> Dict[str, Set[str]]:
+    filters: Dict[str, Set[str]] = {field: set() for field in target_field_aliases}
     physical_map = dataset.get("PhysicalTableMap", {})
     if not isinstance(physical_map, dict):
         return filters
@@ -311,8 +338,8 @@ def extract_custom_sql_where_filters(dataset: Dict[str, Any], target_fields: Lis
         where_clause_lc = normalize(where_clause)
         source_name = custom_sql.get("Name") or str(physical_table_id)
 
-        for field in target_fields:
-            if normalize(field) not in where_clause_lc:
+        for field, aliases in target_field_aliases.items():
+            if not text_mentions_any_alias(where_clause_lc, aliases):
                 continue
             filters[field].add(
                 f"CUSTOM_SQL_WHERE[{source_name}]: {truncate_text(where_clause)}"
@@ -342,15 +369,15 @@ def describe_data_set_safe(
 
 def extract_dataset_filters(
     dataset: Dict[str, Any],
-    target_fields: List[str],
+    target_field_aliases: Dict[str, List[str]],
 ) -> Dict[str, Set[str]]:
-    filters: Dict[str, Set[str]] = {field: set() for field in target_fields}
+    filters: Dict[str, Set[str]] = {field: set() for field in target_field_aliases}
 
     # Filter expressions from logical transforms are the closest thing to dataset-level hard filters.
     for expression in collect_condition_expressions(dataset.get("LogicalTableMap", {})):
         expression_lc = normalize(expression)
-        for field in target_fields:
-            if normalize(field) in expression_lc:
+        for field, aliases in target_field_aliases.items():
+            if text_mentions_any_alias(expression_lc, aliases):
                 filters[field].add(expression)
 
     tag_config = dataset.get("RowLevelPermissionTagConfiguration")
@@ -363,8 +390,8 @@ def extract_dataset_filters(
                 column_name = rule.get("ColumnName")
                 if not isinstance(column_name, str):
                     continue
-                for field in target_fields:
-                    if normalize(column_name) != normalize(field):
+                for field, aliases in target_field_aliases.items():
+                    if normalize(column_name) not in {normalize(alias) for alias in aliases}:
                         continue
                     tag_key = rule.get("TagKey", "")
                     match_all = rule.get("MatchAllValue")
@@ -376,7 +403,7 @@ def extract_dataset_filters(
                         f"Delimiter={delimiter if isinstance(delimiter, str) else 'N/A'}"
                     )
 
-    custom_sql_filters = extract_custom_sql_where_filters(dataset, target_fields)
+    custom_sql_filters = extract_custom_sql_where_filters(dataset, target_field_aliases)
     for field, values in custom_sql_filters.items():
         filters[field].update(values)
 
@@ -385,10 +412,10 @@ def extract_dataset_filters(
 
 def extract_rls_dataset_hint(
     dataset: Dict[str, Any],
-    target_fields: List[str],
+    target_field_aliases: Dict[str, List[str]],
     described_dataset_cache: Dict[str, Dict[str, Any]],
 ) -> Dict[str, Set[str]]:
-    hints: Dict[str, Set[str]] = {field: set() for field in target_fields}
+    hints: Dict[str, Set[str]] = {field: set() for field in target_field_aliases}
 
     rls_data_set = dataset.get("RowLevelPermissionDataSet")
     if not isinstance(rls_data_set, dict):
@@ -406,8 +433,8 @@ def extract_rls_dataset_hint(
     rls_columns = collect_column_names(rls_dataset)
     rls_columns_normalized = {normalize(name) for name in rls_columns}
 
-    for field in target_fields:
-        if normalize(field) in rls_columns_normalized:
+    for field, aliases in target_field_aliases.items():
+        if any(normalize(alias) in rls_columns_normalized for alias in aliases):
             hints[field].add(
                 f"RLS_DATASET:{rls_dataset_id} (field present, row values not exposed by QuickSight API)"
             )
@@ -429,11 +456,25 @@ def format_values(values: Set[str]) -> str:
     return " | ".join(sorted(values))
 
 
+def build_filter_columns(prefix: str, filter_map: Dict[str, Set[str]]) -> Dict[str, str]:
+    return {
+        f"{prefix}_{field}_filters": format_values(set(filter_map.get(field, set())))
+        for field in OUTPUT_FILTER_KEYS
+    }
+
+
+def any_filter_used(dashboard_filters: Dict[str, Set[str]], dataset_filters: Dict[str, Set[str]]) -> bool:
+    for field in OUTPUT_FILTER_KEYS:
+        if dashboard_filters.get(field) or dataset_filters.get(field):
+            return True
+    return False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Build a user -> dashboard -> dataset access table and extract filter hints for "
-            "organization_id, customer_id, and fundraiser_coder."
+            "organization/customer/fundraiser/campaign identifiers and names."
         )
     )
     parser.add_argument(
@@ -610,7 +651,7 @@ def main() -> None:
                         dashboard_dataset_arns.add(dataset_arn)
                         dataset_arns.add(dataset_arn)
 
-            dashboard_filters = find_field_filter_literals(definition, DASHBOARD_FILTER_FIELDS)
+            dashboard_filters = find_field_filter_literals(definition, TARGET_FILTER_FIELD_ALIASES)
             dashboard_info[dashboard_id] = {
                 "dashboard_id": dashboard_id,
                 "dashboard_name": summary.get("Name", dashboard_id),
@@ -659,10 +700,10 @@ def main() -> None:
                 continue
             dataset = described_dataset_cache[dataset_id]
 
-            dataset_filters = extract_dataset_filters(dataset, DATASET_FILTER_FIELDS)
+            dataset_filters = extract_dataset_filters(dataset, TARGET_FILTER_FIELD_ALIASES)
             dataset_rls_hints = extract_rls_dataset_hint(
                 dataset,
-                DATASET_FILTER_FIELDS,
+                TARGET_FILTER_FIELD_ALIASES,
                 described_dataset_cache,
             )
             merged_dataset_filters = merge_filter_maps(dataset_filters, dataset_rls_hints)
@@ -699,23 +740,20 @@ def main() -> None:
                 dashboard_dataset_arns = dashboard.get("dataset_arns", [])
 
                 if not dashboard_dataset_arns:
+                    dashboard_filter_columns = build_filter_columns("dashboard", dashboard_filters)
+                    empty_dataset_filters = {field: set() for field in OUTPUT_FILTER_KEYS}
+                    dataset_filter_columns = build_filter_columns("dataset", empty_dataset_filters)
                     output_rows.append(
                         {
                             "username_email": user_display,
                             "dashboard_name": dashboard_name,
                             "dataset_name": "",
-                            "dashboard_organization_id_filters": format_values(
-                                set(dashboard_filters.get("organization_id", set()))
+                            **dashboard_filter_columns,
+                            **dataset_filter_columns,
+                            "any_org_customer_fundraiser_campaign_filter_used": any_filter_used(
+                                dashboard_filters,
+                                empty_dataset_filters,
                             ),
-                            "dashboard_customer_id_filters": format_values(
-                                set(dashboard_filters.get("customer_id", set()))
-                            ),
-                            "dashboard_fundraiser_coder_filters": format_values(
-                                set(dashboard_filters.get("fundraiser_coder", set()))
-                            ),
-                            "dataset_organization_id_filters": "",
-                            "dataset_customer_id_filters": "",
-                            "dataset_fundraiser_coder_filters": "",
                         }
                     )
                     continue
@@ -723,29 +761,19 @@ def main() -> None:
                 for dataset_arn in dashboard_dataset_arns:
                     dataset_row = dataset_rows.get(dataset_arn, {})
                     dataset_filters = dataset_row.get("dataset_filters", {})
+                    dashboard_filter_columns = build_filter_columns("dashboard", dashboard_filters)
+                    dataset_filter_columns = build_filter_columns("dataset", dataset_filters)
 
                     output_rows.append(
                         {
                             "username_email": user_display,
                             "dashboard_name": dashboard_name,
                             "dataset_name": dataset_row.get("dataset_name", parse_dataset_id_from_arn(dataset_arn) or dataset_arn),
-                            "dashboard_organization_id_filters": format_values(
-                                set(dashboard_filters.get("organization_id", set()))
-                            ),
-                            "dashboard_customer_id_filters": format_values(
-                                set(dashboard_filters.get("customer_id", set()))
-                            ),
-                            "dashboard_fundraiser_coder_filters": format_values(
-                                set(dashboard_filters.get("fundraiser_coder", set()))
-                            ),
-                            "dataset_organization_id_filters": format_values(
-                                set(dataset_filters.get("organization_id", set()))
-                            ),
-                            "dataset_customer_id_filters": format_values(
-                                set(dataset_filters.get("customer_id", set()))
-                            ),
-                            "dataset_fundraiser_coder_filters": format_values(
-                                set(dataset_filters.get("fundraiser_coder", set()))
+                            **dashboard_filter_columns,
+                            **dataset_filter_columns,
+                            "any_org_customer_fundraiser_campaign_filter_used": any_filter_used(
+                                dashboard_filters,
+                                dataset_filters,
                             ),
                         }
                     )
@@ -758,17 +786,12 @@ def main() -> None:
             )
         )
 
-        fieldnames = [
-            "username_email",
-            "dashboard_name",
-            "dataset_name",
-            "dashboard_organization_id_filters",
-            "dashboard_customer_id_filters",
-            "dashboard_fundraiser_coder_filters",
-            "dataset_organization_id_filters",
-            "dataset_customer_id_filters",
-            "dataset_fundraiser_coder_filters",
-        ]
+        fieldnames = ["username_email", "dashboard_name", "dataset_name"]
+        for field in OUTPUT_FILTER_KEYS:
+            fieldnames.append(f"dashboard_{field}_filters")
+        for field in OUTPUT_FILTER_KEYS:
+            fieldnames.append(f"dataset_{field}_filters")
+        fieldnames.append("any_org_customer_fundraiser_campaign_filter_used")
 
         with open(csv_path, "w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)

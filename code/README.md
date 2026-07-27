@@ -222,11 +222,11 @@ python code\qs_user_dashboard_access.py --user-email user@example.com --retry-at
 
 ### `qs_user_dashboard_dataset_filter_report.py`
 
-- Purpose: produce a user-to-dashboard-to-dataset access table and include extracted filter hints for `organization_id`, `customer_id`, and `fundraiser_coder` from dashboard definitions, plus dataset-side filter hints for `organization_id`, `customer_id`, and `fundraiser_coder`.
+- Purpose: produce a user-to-dashboard-to-dataset access table and include extracted filter hints for organization/customer/fundraiser/campaign fields (ID and name variants) from dashboard definitions and dataset definitions.
 - Mutates: no.
 - Inputs: optional `--namespace`, `--dashboard-name-contains`, `--user-email-contains`, `--max-users`, `--retry-attempts`, `--retry-base-seconds`.
 - Outputs: timestamped CSV, JSON, and text log reports in `logs/`.
-- Notes: dashboard filter output is based on saved definition literals/parameters, not per-viewer runtime filter choices. Dataset-side hints include logical-table condition expressions, row-level-security tag configuration hints, and Custom SQL `WHERE` clause snippets when they reference the target fields. For dataset row-level-security datasets, QuickSight APIs do not expose row values; the script reports structural hints when detectable.
+- Notes: dashboard filter output is based on saved definition literals/parameters, not per-viewer runtime filter choices. Dataset-side hints include logical-table condition expressions, row-level-security tag configuration hints, and Custom SQL `WHERE` clause snippets when they reference the target fields. Output includes an aggregate boolean column `any_org_customer_fundraiser_campaign_filter_used` to quickly spot rows where none of those filter families were detected. For dataset row-level-security datasets, QuickSight APIs do not expose row values; the script reports structural hints when detectable.
 - Example:
 
 ```powershell
