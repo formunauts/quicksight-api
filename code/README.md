@@ -62,6 +62,24 @@ python code\qs_dashboard_source.py --dashboard-name "Overall Gross Recurring Pro
 python code\qs_dashboard_source.py --dashboard-name-contains "Gross Recurring"
 ```
 
+### `qs_compare_dashboard_visuals.py`
+
+- Purpose: compare visuals between one reference dashboard and one or many target dashboards to find missing and extra visuals.
+- Mutates: no.
+- Inputs: one reference selector (`--reference-dashboard-id` or `--reference-dashboard-name`) and one target selector (`--target-dashboard-ids` or `--target-dashboard-name-contains`), optionally `--match-key`, `--include-untitled`, `--compare-calculated-fields`, `--calculated-field-match`, `--primary-sort`, `--secondary-sort`, `--limit`, `--max-list-items`.
+- Outputs: timestamped text, JSON, and CSV reports in `logs/`.
+- Notes: default matching is `title-type` (visual title + visual type), which is usually better than strict visual id when dashboards were copied and evolved. Use `--match-key visual-id` for strict clone checks.
+- Notes: enable `--compare-calculated-fields` to also diff dashboard `CalculatedFields` (default field matching: `name-expression`).
+- Notes: sorting is descending. Default is primary `visual-coverage` and secondary `auto` (which becomes `calculated-field-coverage` when calculated-field comparison is enabled, otherwise `target-name`).
+- Example:
+
+```powershell
+python code\qs_compare_dashboard_visuals.py --reference-dashboard-name "Performance Dashboard Template" --target-dashboard-name-contains "Performance"
+python code\qs_compare_dashboard_visuals.py --reference-dashboard-id your-reference-id --target-dashboard-ids id_one id_two --match-key visual-id
+python code\qs_compare_dashboard_visuals.py --reference-dashboard-name "Performance Dashboard Template" --target-dashboard-name-contains "Performance" --compare-calculated-fields --calculated-field-match name-expression
+python code\qs_compare_dashboard_visuals.py --reference-dashboard-name "Performance Dashboard Template" --target-dashboard-name-contains "Performance" --compare-calculated-fields --primary-sort visual-coverage --secondary-sort calculated-field-only-in-target
+```
+
 ### `qs_dashboard_report_schedule_audit.py`
 
 - Purpose: audit dashboard snapshot/report schedules and executions using CloudTrail (`StartDashboardSnapshotJob`, `StartDashboardSnapshotJobSchedule`) plus snapshot job detail APIs.
@@ -224,14 +242,35 @@ python code\qs_user_dashboard_access.py --user-email user@example.com --retry-at
 
 - Purpose: produce a user-to-dashboard-to-dataset access table and include extracted filter hints for organization/customer/fundraiser/campaign fields (ID and name variants) from dashboard definitions and dataset definitions.
 - Mutates: no.
-- Inputs: optional `--namespace`, `--dashboard-name-contains`, `--user-email-contains`, `--max-users`, `--retry-attempts`, `--retry-base-seconds`.
+- Inputs: optional `--namespace`, `--dashboard-name-contains`, `--user-email-contains`, `--user-contains`, `--exclude-user-contains`, `--max-users`, `--retry-attempts`, `--retry-base-seconds`, `--between-folder-member-seconds`, `--between-folder-permission-seconds`, `--access-check-only`, `--skip-direct-dashboard-permissions`, `--dashboard-active-filters-only`.
 - Outputs: timestamped CSV, JSON, and text log reports in `logs/`.
-- Notes: dashboard filter output is based on saved definition literals/parameters, not per-viewer runtime filter choices. Dataset-side hints include logical-table condition expressions, row-level-security tag configuration hints, and Custom SQL `WHERE` clause snippets when they reference the target fields. Output includes an aggregate boolean column `any_org_customer_fundraiser_campaign_filter_used` to quickly spot rows where none of those filter families were detected. For dataset row-level-security datasets, QuickSight APIs do not expose row values; the script reports structural hints when detectable.
+- Notes: dashboard filter output is based on saved definition literals/parameters, not per-viewer runtime filter choices. Use `--dashboard-active-filters-only` to only evaluate enabled dashboard `FilterGroups` and keep filters with concrete literal values saved in those active groups (suppresses parameter-only/select-all hints and ignores disabled groups). Access resolution includes direct dashboard permissions and inherited permissions from shared folders containing the dashboard. Output includes `access_via` (`direct`, `folder`, or `direct+folder`) and aggregate boolean column `any_org_customer_fundraiser_campaign_filter_used` to quickly spot rows where none of those filter families were detected. Dataset-side hints include logical-table condition expressions, row-level-security tag configuration hints, and Custom SQL `WHERE` clause snippets when they reference the target fields. For dataset row-level-security datasets, QuickSight APIs do not expose row values; the script reports structural hints when detectable.
 - Example:
 
 ```powershell
 python code\qs_user_dashboard_dataset_filter_report.py
 python code\qs_user_dashboard_dataset_filter_report.py --dashboard-name-contains payment --user-email-contains @formunauts.com
+python code\qs_user_dashboard_dataset_filter_report.py --user-contains @formunauts.at @formunauts.com
+python code\qs_user_dashboard_dataset_filter_report.py --exclude-user-contains @formunauts.at @formunauts.com
+python code\qs_user_dashboard_dataset_filter_report.py --between-folder-member-seconds 0.25 --between-folder-permission-seconds 0.25
+python code\qs_user_dashboard_dataset_filter_report.py --exclude-user-contains @formunauts.at --dashboard-active-filters-only
+python code\qs_user_dashboard_dataset_filter_report.py --user-contains sascha.knabe-dilly@johanniter.de --access-check-only
+python code\qs_user_dashboard_dataset_filter_report.py --user-contains sascha.knabe-dilly@johanniter.de --access-check-only --skip-direct-dashboard-permissions
+```
+
+### `qs_verify_report_missing_users.py`
+
+- Purpose: verify which QuickSight users are absent from a `qs_user_dashboard_dataset_filter_report` output and classify why.
+- Mutates: no.
+- Inputs: required `--report-json`, optional `--namespace`, `--user-email-contains`, `--user-contains`, `--exclude-user-contains`, `--max-users`, `--ignore-report-filters`.
+- Outputs: timestamped text, JSON, and CSV reports in `logs/`.
+- Notes: by default this script reuses filter settings from the report header (for example `exclude_user_contains`) and then compares scoped users with unique `username_email` values present in `rows`. It reports users excluded by filters and users still in scope but missing from report rows (typically no effective dashboard access resolved).
+- Example:
+
+```powershell
+python code\qs_verify_report_missing_users.py --report-json logs\user_dashboard_dataset_filter_report_20260728_123414.json
+python code\qs_verify_report_missing_users.py --report-json logs\user_dashboard_dataset_filter_report_20260728_123414.json --ignore-report-filters
+python code\qs_verify_report_missing_users.py --report-json logs\user_dashboard_dataset_filter_report_20260728_123414.json --exclude-user-contains @formunauts.at
 ```
 
 ### `qs_audit_dataset_consumers.py`
