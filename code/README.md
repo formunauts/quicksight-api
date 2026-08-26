@@ -62,6 +62,20 @@ python code\qs_dashboard_source.py --dashboard-name "Overall Gross Recurring Pro
 python code\qs_dashboard_source.py --dashboard-name-contains "Gross Recurring"
 ```
 
+### `qs_find_dashboard_customer_id_filters.py`
+
+- Purpose: find published dashboards that expose a sheet filter control connected to a saved `customer_id` or `customer_name` filter, and report each dashboard with its source analysis name.
+- Mutates: no.
+- Inputs: optional repeatable `--field` for exact, case-sensitive column-name matches (default: `customer_id` and `customer_name`) and `--dashboard-name-contains` to narrow the scan.
+- Outputs: timestamped text and JSON reports in `logs/`.
+- Notes: dashboards that only have a saved customer filter but no linked sheet filter control are excluded. The JSON report identifies the sheet and control; it cannot determine whether a control has been visually hidden behind another object.
+- Example:
+
+```powershell
+python code\qs_find_dashboard_customer_id_filters.py
+python code\qs_find_dashboard_customer_id_filters.py --field customer_id --field customer_name --dashboard-name-contains marketplace
+```
+
 ### `qs_compare_dashboard_visuals.py`
 
 - Purpose: compare visuals between one reference dashboard and one or many target dashboards to find missing and extra visuals.
