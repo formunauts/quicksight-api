@@ -16,6 +16,17 @@ This repository contains operational Python scripts for Amazon QuickSight admini
    - `c:\Users\danie\Documents\projects\quicksight-api\.venv\Scripts\Activate.ps1`
 2. Assume AWS role:
    - `awsume QuickSightData`
+   - In Codex/non-interactive PowerShell, AWSume can leave `AWS_PROFILE` and
+     `AWS_DEFAULT_PROFILE` as empty strings. Clear them in the **same shell
+     session** before calling `aws` or Python/boto3, otherwise the AWS CLI
+     fails with `The config profile () could not be found`:
+
+```powershell
+awsume QuickSightData
+$env:AWS_PROFILE = $null
+$env:AWS_DEFAULT_PROFILE = $null
+aws sts get-caller-identity
+```
 3. Run scripts from repo root with venv Python:
    - `c:/Users/danie/Documents/projects/quicksight-api/.venv/Scripts/python.exe code/<script>.py ...`
 

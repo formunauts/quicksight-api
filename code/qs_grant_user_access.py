@@ -268,6 +268,17 @@ def collect_dataset_targets(qs_client, args) -> List[Dict[str, Any]]:
 
 
 def collect_analysis_targets(qs_client, args) -> List[Dict[str, Any]]:
+    if args.analysis_name:
+        return [
+            {
+                "name": row["Name"],
+                "analysis_id": row["AnalysisId"],
+                "arn": row.get("Arn"),
+            }
+            for row in get_all_summaries(qs_client.list_analyses, QS_ACCOUNT_ID, "AnalysisSummaryList")
+            if row.get("Name") == args.analysis_name
+        ]
+
     if not args.all_analyses:
         return []
     return [
@@ -281,6 +292,17 @@ def collect_analysis_targets(qs_client, args) -> List[Dict[str, Any]]:
 
 
 def collect_dashboard_targets(qs_client, args) -> List[Dict[str, Any]]:
+    if args.dashboard_name:
+        return [
+            {
+                "name": row["Name"],
+                "dashboard_id": row["DashboardId"],
+                "arn": row.get("Arn"),
+            }
+            for row in get_all_summaries(qs_client.list_dashboards, QS_ACCOUNT_ID, "DashboardSummaryList")
+            if row.get("Name") == args.dashboard_name
+        ]
+
     if not args.all_dashboards:
         return []
     return [
@@ -323,7 +345,9 @@ def main() -> None:
     parser.add_argument("--plan-file", help="Optional dataset plan file to scope dataset grants.")
     parser.add_argument("--all-datasets", action="store_true", help="Grant access to all datasets.")
     parser.add_argument("--all-analyses", action="store_true", help="Grant access to all analyses.")
+    parser.add_argument("--analysis-name", help="Grant access to a single analysis matching this exact name.")
     parser.add_argument("--all-dashboards", action="store_true", help="Grant access to all dashboards.")
+    parser.add_argument("--dashboard-name", help="Grant access to a single dashboard matching this exact name.")
     parser.add_argument(
         "--action-template",
         choices=["max", "union"],
@@ -354,8 +378,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not args.all_datasets and not args.plan_file and not args.all_analyses and not args.all_dashboards:
-        raise SystemExit("Choose at least one scope: --all-datasets, --plan-file, --all-analyses, or --all-dashboards.")
+    if (
+        not args.all_datasets
+        and not args.plan_file
+        and not args.all_analyses
+        and not args.analysis_name
+        and not args.all_dashboards
+        and not args.dashboard_name
+    ):
+        raise SystemExit(
+            "Choose at least one scope: --all-datasets, --plan-file, --all-analyses, --analysis-name, "
+            "--all-dashboards, or --dashboard-name."
+        )
 
     logger = Logger(build_log_path())
     json_path = build_json_path()
